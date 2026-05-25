@@ -1,87 +1,58 @@
-
 import streamlit as st
-from config.settings import APP_NAME, APP_VERSION
+from config.settings import APP_NAME
 from db.migrations import init_db
+from services.auth_service import authenticate
+from pages import dashboard, health_input, excretion_input
 
-# ページ読込
-from pages import (
-    dashboard,
-    health_input,
-    excretion_input,
-    handover_input,
-)
+st.set_page_config(page_title=APP_NAME, page_icon="🌿", layout="wide")
 
-# =====================================
-# 初期化
-# =====================================
-st.set_page_config(
-    page_title=APP_NAME,
-    page_icon="🏥",
-    layout="wide",
-)
-
-# DB初期化
 try:
-    init_db(seed=True)
+    init_db()
 except Exception as e:
     st.error(f"DB初期化エラー: {e}")
     st.stop()
 
-# =====================================
-# セッション
-# =====================================
 if "logged_in" not in st.session_state:
-    st.session_state.logged_in = True
+    st.session_state.logged_in = False
+if "user" not in st.session_state:
+    st.session_state.user = None
 
-if "user_name" not in st.session_state:
-    st.session_state.user_name = "admin"
+st.sidebar.title("app")
 
-if "role" not in st.session_state:
-    st.session_state.role = "admin"
-
-# =====================================
-# サイドバー
-# =====================================
-with st.sidebar:
+if not st.session_state.logged_in:
     st.title(APP_NAME)
-    st.caption(f"Ver {APP_VERSION}")
+    st.caption("DB定義統一版 Ver1.3.4")
+    login_id = st.text_input("ログインID", value="admin")
+    password = st.text_input("パスワード", type="password", value="admin")
+    if st.button("ログイン"):
+        user = authenticate(login_id, password)
+        if user:
+            st.session_state.logged_in = True
+            st.session_state.user = user
+            st.rerun()
+        else:
+            st.error("ログインIDまたはパスワードが違います。")
+    st.info("初期ID：admin / 初期PW：admin")
+    st.stop()
 
-    st.divider()
+user = st.session_state.user
+st.sidebar.caption(user.get("display_name", "user"))
+menu = st.sidebar.radio(
+    "menu",
+    ["dashboard", "health input", "excretion input", "handover"],
+)
 
-    st.write(f"ログイン中: {st.session_state.user_name}")
-    st.write(f"権限: {st.session_state.role}")
+if st.sidebar.button("ログアウト"):
+    st.session_state.logged_in = False
+    st.session_state.user = None
+    st.rerun()
 
-    st.divider()
-
-    menu = st.radio(
-        "メニュー",
-        [
-            "ダッシュボード",
-            "健康チェック入力",
-            "排泄チェック入力",
-            "申し送り",
-        ],
-    )
-
-    st.divider()
-
-    if st.button("ログアウト"):
-        st.session_state.logged_in = False
-        st.rerun()
-
-# =====================================
-# メイン画面
-# =====================================
-st.title(APP_NAME)
-
-if menu == "ダッシュボード":
-    dashboard.render()
-
-elif menu == "健康チェック入力":
-    health_input.render()
-
-elif menu == "排泄チェック入力":
-    excretion_input.render()
-
-elif menu == "申し送り":
-    handover_input.render()
+if menu == "dashboard":
+    dashboard.render(user)
+elif menu == "health input":
+    health_input.render(user)
+elif menu == "excretion input":
+    excretion_input.render(user)
+else:
+    st.title("handover")
+    st.info("申し送り機能は次段階で追加できます。まずはDB定義統一版の安定起動を優先しています。")

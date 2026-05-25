@@ -1,32 +1,17 @@
-from sqlalchemy import text
-import bcrypt
+from __future__ import annotations
 
-from db.connection import get_engine
-
-def verify_password(password: str, password_hash: str) -> bool:
-    return bcrypt.checkpw(
-        password.encode("utf-8"),
-        password_hash.encode("utf-8")
-    )
+from sqlalchemy import select
+from db.migrations import get_engine
+from db.schema import users
 
 def authenticate(login_id: str, password: str):
     engine = get_engine()
-
     with engine.begin() as conn:
-        user = conn.execute(
-            text("""
-                SELECT *
-                FROM users
-                WHERE login_id=:login_id
-                AND is_active=true
-            """),
-            {"login_id": login_id},
-        ).mappings().fetchone()
-
-    if not user:
-        return None
-
-    if not verify_password(password, user["password_hash"]):
-        return None
-
-    return dict(user)
+        row = conn.execute(
+            select(users).where(
+                users.c.login_id == login_id,
+                users.c.password == password,
+                users.c.is_active == True,
+            )
+        ).mappings().first()
+    return dict(row) if row else None

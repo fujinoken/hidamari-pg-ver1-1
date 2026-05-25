@@ -1,0 +1,7 @@
+APP_NAME = "ひだまり健康チェック管理システム"
+APP_VERSION = "Ver1.3.4 DB定義完全統一版"
+DB_PATH = "hidamari.db"
+DATABASE_URL = "sqlite:///hidamari.db"
+DEFAULT_FACILITY_ID = "default"
+DEFAULT_ADMIN_LOGIN_ID = "admin"
+DEFAULT_ADMIN_PASSWORD = "admin"
