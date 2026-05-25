@@ -1,26 +1,18 @@
-# ひだまり健康チェック管理システム PostgreSQL版 Ver1.3
+# Ver1.3.1 DB定義統一版
 
-Ver4.4 SQLite版を原型設計図として、新設計したPostgreSQL版です。
+差し替え対象:
 
-## Ver1.3 追加内容
-- 更新競合対策（updated_at比較）
-- 監査ログ強化
-- 権限チェック
-- 多施設対応の土台（facility_id）
-- CSV出力
-- PostgreSQL論理バックアップ
-- 検索高速化用インデックス
-- 健康記録・排泄記録・申し送りの検索・更新・削除
+- config/settings.py
+- db/schema.py
+- db/migrations.py
+- services/auth_service.py
 
-## Streamlit Secrets
+方針:
 
-```toml
-DATABASE_URL="postgresql://..."
-```
+- facility_id = TEXT
+- users.id = TEXT
+- login_id = TEXT
+- user_name は互換用任意列
 
-## 初期ログイン
-
-- 管理者: kanri / rui
-- 職員: staff / rui
-
-初回ログイン後、パスワード変更が必要です。
+推奨:
+Neon DBは一度リセットし、この4ファイルを差し替えた状態で起動してください。

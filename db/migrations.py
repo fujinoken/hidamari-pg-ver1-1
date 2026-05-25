@@ -43,6 +43,9 @@ def column_exists(conn, table_name: str, column_name: str) -> bool:
 
 
 def column_data_type(conn, table_name: str, column_name: str) -> str:
+    if not column_exists(conn, table_name, column_name):
+        return ""
+
     row = conn.execute(
         text(
             """
@@ -55,7 +58,7 @@ def column_data_type(conn, table_name: str, column_name: str) -> str:
         ),
         {"table_name": table_name, "column_name": column_name},
     ).fetchone()
-    return row[0] if row else ""
+    return str(row[0]) if row else ""
 
 
 def ensure_column(conn, table_name: str, column_name: str, column_def: str) -> None:
@@ -88,6 +91,14 @@ def hash_password(password: str) -> str:
 
 
 def create_fallback_tables(conn) -> None:
+    """
+    schema.py と同じ方針で最低限テーブルを作る。
+    DB定義統一方針:
+    - facility_id = TEXT
+    - users.id = TEXT
+    - login_id = TEXT
+    - user_name は互換用の任意列
+    """
     conn.execute(
         text(
             """
@@ -108,6 +119,7 @@ def create_fallback_tables(conn) -> None:
                 id TEXT PRIMARY KEY,
                 facility_id TEXT DEFAULT 'facility_default',
                 login_id TEXT UNIQUE,
+                user_name TEXT,
                 display_name TEXT,
                 role TEXT DEFAULT 'staff',
                 password_hash TEXT,
@@ -244,6 +256,10 @@ def create_fallback_tables(conn) -> None:
 
 
 def apply_existing_db_migrations(conn) -> None:
+    """
+    既存DBが途中状態でも落ちにくい補修。
+    ただし本番前はNeon DBをリセットし、schema.pyから作り直す運用を推奨。
+    """
     ensure_column(conn, "facilities", "name", "TEXT")
     ensure_column(conn, "facilities", "created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     ensure_column(conn, "facilities", "updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
@@ -348,7 +364,19 @@ def apply_existing_db_migrations(conn) -> None:
                 {"facility_id": str(DEFAULT_FACILITY_ID)},
             )
 
+    # 互換列 user_name がある場合は login_id で補完
     if table_exists(conn, "users"):
+        if column_exists(conn, "users", "user_name") and column_exists(conn, "users", "login_id"):
+            conn.execute(
+                text(
+                    """
+                    UPDATE users
+                    SET user_name = login_id
+                    WHERE user_name IS NULL
+                    """
+                )
+            )
+
         ensure_index(conn, "idx_users_facility_id", "CREATE INDEX idx_users_facility_id ON users (facility_id)")
         ensure_index(conn, "idx_users_login_id", "CREATE INDEX idx_users_login_id ON users (login_id)")
 
@@ -402,6 +430,7 @@ def seed_default_users(conn) -> None:
         {
             "id": "kanri",
             "login_id": "kanri",
+            "user_name": "kanri",
             "display_name": "管理者",
             "role": "admin",
             "password": "rui",
@@ -409,13 +438,12 @@ def seed_default_users(conn) -> None:
         {
             "id": "staff",
             "login_id": "staff",
+            "user_name": "staff",
             "display_name": "職員",
             "role": "staff",
             "password": "rui",
         },
     ]
-
-    users_id_type = column_data_type(conn, "users", "id")
 
     for user in default_users:
         exists = conn.execute(
@@ -426,43 +454,27 @@ def seed_default_users(conn) -> None:
         if exists:
             continue
 
-        if users_id_type in ["integer", "bigint", "smallint"]:
-            insert_sql = """
-                INSERT INTO users
-                    (facility_id, login_id, user_name, display_name, role, password_hash,
-                     must_change_password, is_active)
-                VALUES
-                    (:facility_id, :login_id, :user_name, :display_name, :role, :password_hash,
-                     true, true)
-            """
-            params = {
-                "facility_id": str(DEFAULT_FACILITY_ID),
-                "login_id": user["login_id"],
-                "user_name": user["login_id"],
-                "display_name": user["display_name"],
-                "role": user["role"],
-                "password_hash": hash_password(user["password"]),
-            }
-        else:
-            insert_sql = """
+        conn.execute(
+            text(
+                """
                 INSERT INTO users
                     (id, facility_id, login_id, user_name, display_name, role, password_hash,
                      must_change_password, is_active)
                 VALUES
                     (:id, :facility_id, :login_id, :user_name, :display_name, :role, :password_hash,
                      true, true)
-            """
-            params = {
+                """
+            ),
+            {
                 "id": user["id"],
                 "facility_id": str(DEFAULT_FACILITY_ID),
                 "login_id": user["login_id"],
-                "user_name": user["login_id"],
+                "user_name": user["user_name"],
                 "display_name": user["display_name"],
                 "role": user["role"],
                 "password_hash": hash_password(user["password"]),
-            }
-
-        conn.execute(text(insert_sql), params)
+            },
+        )
 
 
 def seed_default_residents(conn) -> None:
@@ -518,8 +530,13 @@ def init_db(seed: bool = True) -> None:
     engine = get_engine()
 
     with engine.begin() as conn:
+        # schema.pyで定義された統一DB構造を作成
         metadata.create_all(bind=conn)
+
+        # 万一schema.pyで作られない場合の保険
         create_fallback_tables(conn)
+
+        # 既存DBが残っている場合の補修
         apply_existing_db_migrations(conn)
 
         if seed:
