@@ -72,7 +72,7 @@ def seed_default_facility(conn) -> None:
         conn.execute(
             text("""
                 INSERT INTO facilities (id, name)
-                VALUES (:id, :name, 'active')
+                VALUES (:id, :name)
             """),
             {"id": DEFAULT_FACILITY_ID, "name": DEFAULT_FACILITY_NAME},
         )
