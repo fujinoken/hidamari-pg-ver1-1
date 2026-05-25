@@ -1,29 +1,27 @@
-from datetime import date
 import streamlit as st
+import pandas as pd
+from datetime import date
 from services.health_service import today_input_status, list_health_records
-from services.excretion_service import list_excretion_records
 
 def render():
+    facility_id = st.session_state["facility_id"]
     st.title("管理者ダッシュボード")
     st.caption("DB安定版・健康チェックCRUD対応")
 
     st.subheader("今日の健康チェック入力状況")
-    status = today_input_status(date.today())
-    if status.empty:
-        st.info("利用者がまだ登録されていません。")
+    target_date = st.date_input("確認日", value=date.today(), key="dash_date").isoformat()
+    rows = today_input_status(facility_id, target_date)
+    if rows:
+        df = pd.DataFrame(rows)
+        st.dataframe(df[["user_name", "room", "status"]], use_container_width=True, hide_index=True)
+        done = (df["status"] == "入力済み").sum()
+        st.info(f"入力済み：{done}名 / 対象：{len(df)}名")
     else:
-        st.dataframe(status, use_container_width=True, hide_index=True)
+        st.warning("利用者が登録されていません。まず「利用者登録」から登録してください。")
 
-    st.subheader("健康チェック履歴")
-    df = list_health_records(limit=10)
-    if df.empty:
+    st.subheader("直近の健康チェック履歴")
+    records = list_health_records(facility_id, limit=20)
+    if records:
+        st.dataframe(pd.DataFrame(records), use_container_width=True, hide_index=True)
+    else:
         st.info("健康チェック記録はまだありません。")
-    else:
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-    st.subheader("排泄チェック履歴")
-    ex = list_excretion_records(limit=10)
-    if ex.empty:
-        st.info("排泄チェック記録はまだありません。")
-    else:
-        st.dataframe(ex, use_container_width=True, hide_index=True)

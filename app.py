@@ -1,8 +1,7 @@
 import streamlit as st
+from config.settings import APP_NAME, APP_VERSION, DEFAULT_FACILITY_ID
 from db.migrations import init_db
 from services.auth_service import login
-from config.settings import APP_NAME, APP_VERSION
-
 from views import dashboard, users, health_input, excretion_input, handover
 
 st.set_page_config(page_title=APP_NAME, page_icon="🌿", layout="wide")
@@ -10,42 +9,42 @@ st.set_page_config(page_title=APP_NAME, page_icon="🌿", layout="wide")
 # DB初期化
 init_db()
 
-st.sidebar.title(APP_NAME)
-st.sidebar.caption(APP_VERSION)
-
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
+if "facility_id" not in st.session_state:
+    st.session_state.facility_id = DEFAULT_FACILITY_ID
 
-if not st.session_state.logged_in:
-    st.title(APP_NAME)
-    st.subheader("ログイン")
-    with st.form("login_form"):
+with st.sidebar:
+    st.markdown(f"### {APP_NAME}")
+    st.caption(APP_VERSION)
+
+    if not st.session_state.logged_in:
+        st.subheader("ログイン")
         login_id = st.text_input("ログインID", value="admin")
         password = st.text_input("パスワード", value="admin", type="password")
-        submitted = st.form_submit_button("ログイン")
-        if submitted:
-            user = login(login_id, password)
-            if user:
+        if st.button("ログイン"):
+            account = login(login_id, password)
+            if account:
                 st.session_state.logged_in = True
-                st.session_state.user_name = user.get("display_name", "管理者")
-                st.session_state.role = user.get("role", "admin")
+                st.session_state.staff_name = account.get("staff_name") or account.get("login_id")
+                st.session_state.role = account.get("role", "staff")
+                st.session_state.facility_id = account.get("facility_id") or DEFAULT_FACILITY_ID
                 st.rerun()
             else:
                 st.error("ログインIDまたはパスワードが違います。")
-    st.stop()
+        st.stop()
 
-st.sidebar.success(f"ログイン中：{st.session_state.get('user_name', '管理者')}")
-st.sidebar.divider()
-
-menu = st.sidebar.radio(
-    "管理者メニュー",
-    ["管理者ダッシュボード", "利用者登録", "健康チェック入力", "排泄チェック入力", "申し送り"],
-)
-
-st.sidebar.divider()
-if st.sidebar.button("ログアウト"):
-    st.session_state.clear()
-    st.rerun()
+    st.success(f"ログイン中：{st.session_state.get('staff_name', '')}")
+    st.divider()
+    menu = st.radio(
+        "管理者メニュー",
+        ["管理者ダッシュボード", "利用者登録", "健康チェック入力", "排泄チェック入力", "申し送り"],
+        index=0,
+    )
+    st.divider()
+    if st.button("ログアウト"):
+        st.session_state.clear()
+        st.rerun()
 
 if menu == "管理者ダッシュボード":
     dashboard.render()
