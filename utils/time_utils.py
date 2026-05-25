@@ -4,7 +4,7 @@ from datetime import datetime, date, timedelta
 
 try:
     from zoneinfo import ZoneInfo
-except Exception:
+except Exception:  # pragma: no cover
     ZoneInfo = None
 
 JST = ZoneInfo("Asia/Tokyo") if ZoneInfo else None
