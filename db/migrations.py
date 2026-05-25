@@ -42,18 +42,28 @@ def column_exists(conn, table_name: str, column_name: str) -> bool:
     return row is not None
 
 
+def column_data_type(conn, table_name: str, column_name: str) -> str:
+    row = conn.execute(
+        text(
+            """
+            SELECT data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = :table_name
+              AND column_name = :column_name
+            """
+        ),
+        {"table_name": table_name, "column_name": column_name},
+    ).fetchone()
+    return row[0] if row else ""
+
+
 def ensure_column(conn, table_name: str, column_name: str, column_def: str) -> None:
-    """
-    テーブルが存在し、列がない場合だけ追加する。
-    既存DBの途中状態でも落ちにくくする。
-    """
     if not table_exists(conn, table_name):
         return
 
     if not column_exists(conn, table_name, column_name):
-        conn.execute(
-            text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
-        )
+        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}"))
 
 
 def ensure_index(conn, index_name: str, sql: str) -> None:
@@ -78,11 +88,6 @@ def hash_password(password: str) -> str:
 
 
 def create_fallback_tables(conn) -> None:
-    """
-    metadata.create_all で作られなかった場合の保険。
-    PostgreSQL版Ver1.3の最低限テーブルを作る。
-    """
-
     conn.execute(
         text(
             """
@@ -100,7 +105,7 @@ def create_fallback_tables(conn) -> None:
         text(
             """
             CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
+                id TEXT PRIMARY KEY,
                 facility_id TEXT DEFAULT 'facility_default',
                 login_id TEXT UNIQUE,
                 display_name TEXT,
@@ -239,17 +244,10 @@ def create_fallback_tables(conn) -> None:
 
 
 def apply_existing_db_migrations(conn) -> None:
-    """
-    既存DBが古い構造でも落ちないように不足列を追加する。
-    facility_id は PostgreSQL版では TEXT として扱う。
-    """
-
-    # facilities
     ensure_column(conn, "facilities", "name", "TEXT")
     ensure_column(conn, "facilities", "created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     ensure_column(conn, "facilities", "updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
-    # users
     ensure_column(conn, "users", "facility_id", "TEXT DEFAULT 'facility_default'")
     ensure_column(conn, "users", "login_id", "TEXT")
     ensure_column(conn, "users", "display_name", "TEXT")
@@ -260,14 +258,12 @@ def apply_existing_db_migrations(conn) -> None:
     ensure_column(conn, "users", "created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     ensure_column(conn, "users", "updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
-    # residents
     ensure_column(conn, "residents", "facility_id", "TEXT DEFAULT 'facility_default'")
     ensure_column(conn, "residents", "name", "TEXT")
     ensure_column(conn, "residents", "is_visible", "BOOLEAN DEFAULT true")
     ensure_column(conn, "residents", "created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     ensure_column(conn, "residents", "updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
-    # health_records
     ensure_column(conn, "health_records", "facility_id", "TEXT DEFAULT 'facility_default'")
     ensure_column(conn, "health_records", "resident_id", "INTEGER")
     ensure_column(conn, "health_records", "resident_name", "TEXT")
@@ -288,7 +284,6 @@ def apply_existing_db_migrations(conn) -> None:
     ensure_column(conn, "health_records", "created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     ensure_column(conn, "health_records", "updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
-    # excretion_records
     ensure_column(conn, "excretion_records", "facility_id", "TEXT DEFAULT 'facility_default'")
     ensure_column(conn, "excretion_records", "resident_id", "INTEGER")
     ensure_column(conn, "excretion_records", "resident_name", "TEXT")
@@ -303,7 +298,6 @@ def apply_existing_db_migrations(conn) -> None:
     ensure_column(conn, "excretion_records", "created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     ensure_column(conn, "excretion_records", "updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
-    # handover_records
     ensure_column(conn, "handover_records", "facility_id", "TEXT DEFAULT 'facility_default'")
     ensure_column(conn, "handover_records", "record_date", "DATE")
     ensure_column(conn, "handover_records", "shift", "TEXT")
@@ -316,7 +310,6 @@ def apply_existing_db_migrations(conn) -> None:
     ensure_column(conn, "handover_records", "created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     ensure_column(conn, "handover_records", "updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
-    # audit_logs
     ensure_column(conn, "audit_logs", "facility_id", "TEXT DEFAULT 'facility_default'")
     ensure_column(conn, "audit_logs", "login_id", "TEXT")
     ensure_column(conn, "audit_logs", "role", "TEXT")
@@ -326,7 +319,6 @@ def apply_existing_db_migrations(conn) -> None:
     ensure_column(conn, "audit_logs", "summary", "TEXT")
     ensure_column(conn, "audit_logs", "created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
-    # backup_logs
     ensure_column(conn, "backup_logs", "facility_id", "TEXT DEFAULT 'facility_default'")
     ensure_column(conn, "backup_logs", "backup_type", "TEXT")
     ensure_column(conn, "backup_logs", "file_name", "TEXT")
@@ -334,7 +326,6 @@ def apply_existing_db_migrations(conn) -> None:
     ensure_column(conn, "backup_logs", "created_by", "TEXT")
     ensure_column(conn, "backup_logs", "created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
-    # NULL補完
     for table_name in [
         "users",
         "residents",
@@ -356,7 +347,6 @@ def apply_existing_db_migrations(conn) -> None:
                 {"facility_id": str(DEFAULT_FACILITY_ID)},
             )
 
-    # 検索高速化
     if table_exists(conn, "users"):
         ensure_index(conn, "idx_users_facility_id", "CREATE INDEX idx_users_facility_id ON users (facility_id)")
         ensure_index(conn, "idx_users_login_id", "CREATE INDEX idx_users_login_id ON users (login_id)")
@@ -409,18 +399,22 @@ def seed_default_users(conn) -> None:
 
     default_users = [
         {
+            "id": "kanri",
             "login_id": "kanri",
             "display_name": "管理者",
             "role": "admin",
             "password": "rui",
         },
         {
+            "id": "staff",
             "login_id": "staff",
             "display_name": "職員",
             "role": "staff",
             "password": "rui",
         },
     ]
+
+    users_id_type = column_data_type(conn, "users", "id")
 
     for user in default_users:
         exists = conn.execute(
@@ -431,25 +425,41 @@ def seed_default_users(conn) -> None:
         if exists:
             continue
 
-        conn.execute(
-            text(
-                """
+        if users_id_type in ["integer", "bigint", "smallint"]:
+            insert_sql = """
                 INSERT INTO users
                     (facility_id, login_id, display_name, role, password_hash,
                      must_change_password, is_active)
                 VALUES
                     (:facility_id, :login_id, :display_name, :role, :password_hash,
                      true, true)
-                """
-            ),
-            {
+            """
+            params = {
                 "facility_id": str(DEFAULT_FACILITY_ID),
                 "login_id": user["login_id"],
                 "display_name": user["display_name"],
                 "role": user["role"],
                 "password_hash": hash_password(user["password"]),
-            },
-        )
+            }
+        else:
+            insert_sql = """
+                INSERT INTO users
+                    (id, facility_id, login_id, display_name, role, password_hash,
+                     must_change_password, is_active)
+                VALUES
+                    (:id, :facility_id, :login_id, :display_name, :role, :password_hash,
+                     true, true)
+            """
+            params = {
+                "id": user["id"],
+                "facility_id": str(DEFAULT_FACILITY_ID),
+                "login_id": user["login_id"],
+                "display_name": user["display_name"],
+                "role": user["role"],
+                "password_hash": hash_password(user["password"]),
+            }
+
+        conn.execute(text(insert_sql), params)
 
 
 def seed_default_residents(conn) -> None:
@@ -506,7 +516,6 @@ def init_db(seed: bool = True) -> None:
 
     with engine.begin() as conn:
         metadata.create_all(bind=conn)
-
         create_fallback_tables(conn)
         apply_existing_db_migrations(conn)
 
