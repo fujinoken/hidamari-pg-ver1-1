@@ -1,54 +1,33 @@
+from __future__ import annotations
 import os
 import streamlit as st
-from sqlalchemy import create_engine, text
-from config.settings import DEFAULT_ADMIN_ID, DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_NAME, DEFAULT_FACILITY_ID
-from db.schema import metadata
+from sqlalchemy import create_engine, select, insert
+from db.schema import metadata, staff_accounts
+from config.settings import DEFAULT_ADMIN_LOGIN_ID, DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_NAME
 
-
-def get_database_url() -> str:
-    url = None
-    try:
-        url = st.secrets.get("DATABASE_URL")
-    except Exception:
-        url = None
-    url = url or os.environ.get("DATABASE_URL") or "sqlite:///hidamari.db"
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql+psycopg2://", 1)
-    elif url.startswith("postgresql://"):
-        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
-    return url
-
-
-_ENGINE = None
-
-
+@st.cache_resource
 def get_engine():
-    global _ENGINE
-    if _ENGINE is None:
-        _ENGINE = create_engine(get_database_url(), pool_pre_ping=True, future=True)
-    return _ENGINE
-
+    db_url = None
+    try:
+        db_url = st.secrets.get("DATABASE_URL")
+    except Exception:
+        db_url = None
+    if not db_url:
+        db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        db_url = "sqlite:///hidamari.db"
+    return create_engine(db_url, future=True, pool_pre_ping=True)
 
 def init_db():
     engine = get_engine()
     metadata.create_all(engine)
     with engine.begin() as conn:
-        exists = conn.execute(
-            text("SELECT id FROM users WHERE login_id = :login_id LIMIT 1"),
-            {"login_id": DEFAULT_ADMIN_ID},
-        ).first()
+        exists = conn.execute(select(staff_accounts.c.id).where(staff_accounts.c.login_id == DEFAULT_ADMIN_LOGIN_ID)).first()
         if not exists:
-            conn.execute(
-                text("""
-                INSERT INTO users (id, facility_id, login_id, password, name, role)
-                VALUES (:id, :facility_id, :login_id, :password, :name, :role)
-                """),
-                {
-                    "id": "admin",
-                    "facility_id": DEFAULT_FACILITY_ID,
-                    "login_id": DEFAULT_ADMIN_ID,
-                    "password": DEFAULT_ADMIN_PASSWORD,
-                    "name": DEFAULT_ADMIN_NAME,
-                    "role": "admin",
-                },
-            )
+            conn.execute(insert(staff_accounts).values(
+                login_id=DEFAULT_ADMIN_LOGIN_ID,
+                password=DEFAULT_ADMIN_PASSWORD,
+                staff_name=DEFAULT_ADMIN_NAME,
+                role="admin",
+                is_active=True,
+            ))

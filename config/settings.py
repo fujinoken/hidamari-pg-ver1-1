@@ -1,6 +1,5 @@
 APP_NAME = "ひだまり健康チェック管理システム"
-APP_VERSION = "Ver1.3.7"
-DEFAULT_ADMIN_ID = "admin"
+APP_VERSION = "Ver1.3.9｜健康チェックCRUD表示強化版"
+DEFAULT_ADMIN_LOGIN_ID = "admin"
 DEFAULT_ADMIN_PASSWORD = "admin"
 DEFAULT_ADMIN_NAME = "管理者"
-DEFAULT_FACILITY_ID = "default"
