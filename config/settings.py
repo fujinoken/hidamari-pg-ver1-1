@@ -6,7 +6,7 @@ import streamlit as st
 APP_NAME = "ひだまり健康チェック管理システム"
 APP_VERSION = "Ver1.3 PostgreSQL 商品化基盤版"
 
-DEFAULT_FACILITY_ID = 1
+DEFAULT_FACILITY_ID = "facility_default"
 DEFAULT_FACILITY_NAME = "ひだまり"
 
 def get_database_url() -> str:
