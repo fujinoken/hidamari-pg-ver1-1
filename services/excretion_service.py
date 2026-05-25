@@ -1,127 +1,68 @@
+
 from __future__ import annotations
+import uuid
+import pandas as pd
+from sqlalchemy import select, insert, update, delete, or_
+from db.connection import get_engine
+from db.schema import excretion_records, users
+from config.settings import DEFAULT_FACILITY_ID
+from utils.time_utils import now_jst_dt
+from services.audit_service import add_audit_log
 
-from sqlalchemy.dialects.postgresql import insert
-from db.connection import get_session
-from db.schema import ExcretionRecord, User
+def create_excretion_record(data: dict, actor: dict):
+    rid = str(uuid.uuid4())
+    row = dict(data)
+    row.update({
+        "id": rid,
+        "facility_id": DEFAULT_FACILITY_ID,
+        "created_by": actor.get("login_id", ""),
+        "updated_by": actor.get("login_id", ""),
+    })
+    with get_engine().begin() as conn:
+        conn.execute(insert(excretion_records).values(**row))
+    add_audit_log(actor.get("login_id",""), actor.get("role",""), "排泄記録登録", "excretion_records", rid, after=row)
+    return rid
 
-
-def excretion_record_to_dict(record: ExcretionRecord, user_name: str = "") -> dict:
-    return {
-        "ID": record.id,
-        "記録日": record.record_date,
-        "利用者名": user_name,
-        "時間帯": record.slot,
-        "尿量": record.urine_amount,
-        "尿性状": record.urine_type,
-        "便量": record.stool_amount,
-        "便性状": record.stool_type,
-        "メモ": record.memo,
-        "入力者": record.input_by,
-        "登録日時": record.created_at,
-        "更新日時": record.updated_at,
-    }
-
-
-def upsert_excretion_record(data: dict) -> None:
-    session = get_session()
-    try:
-        stmt = insert(ExcretionRecord).values(**data)
-        update_cols = {
-            c.name: getattr(stmt.excluded, c.name)
-            for c in ExcretionRecord.__table__.columns
-            if c.name not in ["id", "created_at"]
-        }
-        stmt = stmt.on_conflict_do_update(
-            constraint="uq_excretion_date_user_slot",
-            set_=update_cols,
-        )
-        session.execute(stmt)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
-
-
-def list_excretion_records(limit: int = 300):
-    session = get_session()
-    try:
-        rows = (
-            session.query(ExcretionRecord, User)
-            .join(User, ExcretionRecord.user_id == User.id)
-            .order_by(ExcretionRecord.record_date.desc(), User.display_name.asc(), ExcretionRecord.slot.asc())
-            .limit(limit)
-            .all()
-        )
-        return [excretion_record_to_dict(r, u.display_name) for r, u in rows]
-    finally:
-        session.close()
-
-
-def search_excretion_records(user_id: int | None = None, date_from=None, date_to=None, keyword: str = "", limit: int = 500):
-    session = get_session()
-    try:
-        q = session.query(ExcretionRecord, User).join(User, ExcretionRecord.user_id == User.id)
+def search_excretion_records(start_date=None, end_date=None, user_id=None, keyword="") -> pd.DataFrame:
+    with get_engine().begin() as conn:
+        stmt = select(excretion_records, users.c.user_name.label("user_name")).join(users, users.c.id == excretion_records.c.user_id).where(excretion_records.c.facility_id == DEFAULT_FACILITY_ID)
+        if start_date:
+            stmt = stmt.where(excretion_records.c.record_date >= start_date)
+        if end_date:
+            stmt = stmt.where(excretion_records.c.record_date <= end_date)
         if user_id:
-            q = q.filter(ExcretionRecord.user_id == user_id)
-        if date_from:
-            q = q.filter(ExcretionRecord.record_date >= date_from)
-        if date_to:
-            q = q.filter(ExcretionRecord.record_date <= date_to)
+            stmt = stmt.where(excretion_records.c.user_id == user_id)
         if keyword:
             like = f"%{keyword}%"
-            q = q.filter((ExcretionRecord.memo.ilike(like)) | (ExcretionRecord.input_by.ilike(like)))
-        rows = q.order_by(ExcretionRecord.record_date.desc(), User.display_name.asc(), ExcretionRecord.slot.asc()).limit(limit).all()
-        return [excretion_record_to_dict(r, u.display_name) for r, u in rows]
-    finally:
-        session.close()
+            stmt = stmt.where(or_(excretion_records.c.memo.ilike(like), users.c.user_name.ilike(like)))
+        stmt = stmt.order_by(excretion_records.c.record_date.desc(), excretion_records.c.created_at.desc()).limit(500)
+        rows = conn.execute(stmt).mappings().all()
+    return pd.DataFrame([dict(r) for r in rows])
 
+def get_excretion_record(record_id: str) -> dict | None:
+    with get_engine().begin() as conn:
+        row = conn.execute(select(excretion_records).where(excretion_records.c.id == record_id)).mappings().first()
+    return dict(row) if row else None
 
-def get_excretion_record(record_id: int) -> dict | None:
-    session = get_session()
-    try:
-        row = (
-            session.query(ExcretionRecord, User)
-            .join(User, ExcretionRecord.user_id == User.id)
-            .filter(ExcretionRecord.id == record_id)
-            .first()
-        )
-        if not row:
-            return None
-        r, u = row
-        return excretion_record_to_dict(r, u.display_name)
-    finally:
-        session.close()
+def update_excretion_record(record_id: str, data: dict, actor: dict, expected_updated_at: str | None):
+    before = get_excretion_record(record_id)
+    if not before:
+        raise ValueError("対象記録が見つかりません。")
+    if expected_updated_at and expected_updated_at != str(before.get("updated_at")):
+        raise RuntimeError("他の端末で更新されています。画面を再読み込みしてから再度確認してください。")
+    row = dict(data)
+    row["updated_by"] = actor.get("login_id", "")
+    row["updated_at"] = now_jst_dt()
+    with get_engine().begin() as conn:
+        conn.execute(update(excretion_records).where(excretion_records.c.id == record_id).values(**row))
+    add_audit_log(actor.get("login_id",""), actor.get("role",""), "排泄記録更新", "excretion_records", record_id, before=before, after=row)
 
-
-def update_excretion_record(record_id: int, data: dict) -> None:
-    session = get_session()
-    try:
-        record = session.query(ExcretionRecord).filter(ExcretionRecord.id == record_id).first()
-        if not record:
-            raise ValueError("対象の排泄記録が見つかりません。")
-        for key, value in data.items():
-            if hasattr(record, key):
-                setattr(record, key, value)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
-
-
-def delete_excretion_record(record_id: int) -> None:
-    session = get_session()
-    try:
-        record = session.query(ExcretionRecord).filter(ExcretionRecord.id == record_id).first()
-        if not record:
-            raise ValueError("対象の排泄記録が見つかりません。")
-        session.delete(record)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+def delete_excretion_record(record_id: str, actor: dict, expected_updated_at: str | None):
+    before = get_excretion_record(record_id)
+    if not before:
+        raise ValueError("対象記録が見つかりません。")
+    if expected_updated_at and expected_updated_at != str(before.get("updated_at")):
+        raise RuntimeError("他の端末で更新されています。画面を再読み込みしてから再度確認してください。")
+    with get_engine().begin() as conn:
+        conn.execute(delete(excretion_records).where(excretion_records.c.id == record_id))
+    add_audit_log(actor.get("login_id",""), actor.get("role",""), "排泄記録削除", "excretion_records", record_id, before=before)

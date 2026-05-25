@@ -1,171 +1,94 @@
+
 from __future__ import annotations
-
+import uuid
 import pandas as pd
-from sqlalchemy.dialects.postgresql import insert
-from db.connection import get_session
-from db.schema import HealthRecord, User
+from sqlalchemy import select, insert, update, delete, and_, or_
+from db.connection import get_engine
+from db.schema import health_records, users
+from config.settings import DEFAULT_FACILITY_ID
+from utils.time_utils import now_jst_dt
+from services.audit_service import add_audit_log
 
+def create_health_record(data: dict, actor: dict):
+    rid = str(uuid.uuid4())
+    row = dict(data)
+    row.update({
+        "id": rid,
+        "facility_id": DEFAULT_FACILITY_ID,
+        "created_by": actor.get("login_id", ""),
+        "updated_by": actor.get("login_id", ""),
+    })
+    with get_engine().begin() as conn:
+        conn.execute(insert(health_records).values(**row))
+    add_audit_log(actor.get("login_id",""), actor.get("role",""), "健康記録登録", "health_records", rid, after=row)
+    return rid
 
-def health_record_to_dict(record: HealthRecord, user_name: str = "") -> dict:
-    return {
-        "ID": record.id,
-        "記録日": record.record_date,
-        "利用者名": user_name,
-        "体温": record.temperature,
-        "血圧上": record.bp_high,
-        "血圧下": record.bp_low,
-        "脈拍": record.pulse,
-        "SpO2": record.spo2,
-        "体重": record.weight,
-        "朝食": record.breakfast_rate,
-        "昼食": record.lunch_rate,
-        "夕食": record.dinner_rate,
-        "水分ml": record.water_ml,
-        "家族共有メモ": record.family_note,
-        "気になる変化": record.change_note,
-        "入力者": record.input_by,
-        "登録日時": record.created_at,
-        "更新日時": record.updated_at,
-    }
-
-
-def upsert_health_record(data: dict) -> None:
-    session = get_session()
-    try:
-        stmt = insert(HealthRecord).values(**data)
-        update_cols = {
-            c.name: getattr(stmt.excluded, c.name)
-            for c in HealthRecord.__table__.columns
-            if c.name not in ["id", "created_at"]
-        }
-        stmt = stmt.on_conflict_do_update(
-            constraint="uq_health_record_date_user",
-            set_=update_cols,
+def search_health_records(start_date=None, end_date=None, user_id=None, keyword="") -> pd.DataFrame:
+    with get_engine().begin() as conn:
+        stmt = select(
+            health_records,
+            users.c.user_name.label("user_name"),
+        ).join(users, users.c.id == health_records.c.user_id).where(
+            health_records.c.facility_id == DEFAULT_FACILITY_ID
         )
-        session.execute(stmt)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
-
-
-def list_health_records(limit: int = 300):
-    session = get_session()
-    try:
-        rows = (
-            session.query(HealthRecord, User)
-            .join(User, HealthRecord.user_id == User.id)
-            .order_by(HealthRecord.record_date.desc(), User.display_name.asc())
-            .limit(limit)
-            .all()
-        )
-        return [health_record_to_dict(r, u.display_name) for r, u in rows]
-    finally:
-        session.close()
-
-
-def search_health_records(user_id: int | None = None, date_from=None, date_to=None, keyword: str = "", limit: int = 500):
-    session = get_session()
-    try:
-        q = session.query(HealthRecord, User).join(User, HealthRecord.user_id == User.id)
+        if start_date:
+            stmt = stmt.where(health_records.c.record_date >= start_date)
+        if end_date:
+            stmt = stmt.where(health_records.c.record_date <= end_date)
         if user_id:
-            q = q.filter(HealthRecord.user_id == user_id)
-        if date_from:
-            q = q.filter(HealthRecord.record_date >= date_from)
-        if date_to:
-            q = q.filter(HealthRecord.record_date <= date_to)
+            stmt = stmt.where(health_records.c.user_id == user_id)
         if keyword:
             like = f"%{keyword}%"
-            q = q.filter((HealthRecord.family_note.ilike(like)) | (HealthRecord.change_note.ilike(like)) | (HealthRecord.input_by.ilike(like)))
-        rows = q.order_by(HealthRecord.record_date.desc(), User.display_name.asc()).limit(limit).all()
-        return [health_record_to_dict(r, u.display_name) for r, u in rows]
-    finally:
-        session.close()
+            stmt = stmt.where(or_(health_records.c.family_note.ilike(like), health_records.c.change_note.ilike(like), users.c.user_name.ilike(like)))
+        stmt = stmt.order_by(health_records.c.record_date.desc(), health_records.c.created_at.desc()).limit(500)
+        rows = conn.execute(stmt).mappings().all()
+    return pd.DataFrame([dict(r) for r in rows])
 
+def get_health_record(record_id: str) -> dict | None:
+    with get_engine().begin() as conn:
+        row = conn.execute(select(health_records).where(health_records.c.id == record_id)).mappings().first()
+    return dict(row) if row else None
 
-def get_health_record(record_id: int) -> dict | None:
-    session = get_session()
-    try:
-        row = (
-            session.query(HealthRecord, User)
-            .join(User, HealthRecord.user_id == User.id)
-            .filter(HealthRecord.id == record_id)
-            .first()
-        )
-        if not row:
-            return None
-        r, u = row
-        return health_record_to_dict(r, u.display_name)
-    finally:
-        session.close()
+def update_health_record(record_id: str, data: dict, actor: dict, expected_updated_at: str | None):
+    before = get_health_record(record_id)
+    if not before:
+        raise ValueError("対象記録が見つかりません。")
+    current_token = str(before.get("updated_at"))
+    if expected_updated_at and expected_updated_at != current_token:
+        raise RuntimeError("他の端末で更新されています。画面を再読み込みしてから再度確認してください。")
+    row = dict(data)
+    row["updated_by"] = actor.get("login_id", "")
+    row["updated_at"] = now_jst_dt()
+    with get_engine().begin() as conn:
+        conn.execute(update(health_records).where(health_records.c.id == record_id).values(**row))
+    add_audit_log(actor.get("login_id",""), actor.get("role",""), "健康記録更新", "health_records", record_id, before=before, after=row)
 
+def delete_health_record(record_id: str, actor: dict, expected_updated_at: str | None):
+    before = get_health_record(record_id)
+    if not before:
+        raise ValueError("対象記録が見つかりません。")
+    current_token = str(before.get("updated_at"))
+    if expected_updated_at and expected_updated_at != current_token:
+        raise RuntimeError("他の端末で更新されています。画面を再読み込みしてから再度確認してください。")
+    with get_engine().begin() as conn:
+        conn.execute(delete(health_records).where(health_records.c.id == record_id))
+    add_audit_log(actor.get("login_id",""), actor.get("role",""), "健康記録削除", "health_records", record_id, before=before)
 
-def update_health_record(record_id: int, data: dict) -> None:
-    session = get_session()
-    try:
-        record = session.query(HealthRecord).filter(HealthRecord.id == record_id).first()
-        if not record:
-            raise ValueError("対象の健康記録が見つかりません。")
-        for key, value in data.items():
-            if hasattr(record, key):
-                setattr(record, key, value)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
-
-
-def delete_health_record(record_id: int) -> None:
-    session = get_session()
-    try:
-        record = session.query(HealthRecord).filter(HealthRecord.id == record_id).first()
-        if not record:
-            raise ValueError("対象の健康記録が見つかりません。")
-        session.delete(record)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
-
-
-def latest_weight_by_user(user_id: int):
-    session = get_session()
-    try:
-        return (
-            session.query(HealthRecord)
-            .filter(HealthRecord.user_id == user_id, HealthRecord.weight.isnot(None))
-            .order_by(HealthRecord.record_date.desc())
-            .first()
-        )
-    finally:
-        session.close()
-
-
-def weight_unmeasured_over(days: int = 14):
-    session = get_session()
-    try:
-        users = session.query(User).filter(User.is_visible == True).all()  # noqa: E712
-        rows = []
-        today = pd.Timestamp.today().date()
-        for u in users:
-            latest = (
-                session.query(HealthRecord)
-                .filter(HealthRecord.user_id == u.id, HealthRecord.weight.isnot(None))
-                .order_by(HealthRecord.record_date.desc())
-                .first()
-            )
-            if not latest:
-                rows.append({"利用者名": u.display_name, "最新体重": "未測定", "最終測定日": "", "経過日数": "未測定"})
-            else:
-                elapsed = (today - latest.record_date).days
-                if elapsed >= days:
-                    rows.append({"利用者名": u.display_name, "最新体重": latest.weight, "最終測定日": latest.record_date, "経過日数": elapsed})
-        return rows
-    finally:
-        session.close()
+def latest_weight_days() -> pd.DataFrame:
+    with get_engine().begin() as conn:
+        df_users = pd.DataFrame([dict(r) for r in conn.execute(select(users).where(users.c.facility_id == DEFAULT_FACILITY_ID, users.c.display_flag == True)).mappings().all()])
+        df_health = pd.DataFrame([dict(r) for r in conn.execute(select(health_records).where(health_records.c.facility_id == DEFAULT_FACILITY_ID, health_records.c.weight != None)).mappings().all()])
+    if df_users.empty:
+        return pd.DataFrame(columns=["利用者名","最新体重","最終測定日","経過日数"])
+    rows=[]
+    today = pd.Timestamp.today().normalize().date()
+    for _,u in df_users.iterrows():
+        h = df_health[df_health["user_id"]==u["id"]] if not df_health.empty else pd.DataFrame()
+        if h.empty:
+            rows.append({"利用者名":u["user_name"],"最新体重":"未測定","最終測定日":"","経過日数":"未測定"})
+        else:
+            h=h.sort_values("record_date", ascending=False)
+            r=h.iloc[0]
+            d=pd.to_datetime(r["record_date"]).date()
+            rows.append({"利用者名":u["user_name"],"最新体重":r["weight"],"最終測定日":str(d),"経過日数":(today-d).days})
+    return pd.DataFrame(rows)

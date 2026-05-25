@@ -1,31 +1,20 @@
-from __future__ import annotations
 
+from __future__ import annotations
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.engine import Engine
 from config.settings import require_database_url
 
-_engine = None
-_SessionLocal = None
+_ENGINE: Engine | None = None
 
-
-def get_engine():
-    global _engine, _SessionLocal
-    if _engine is None:
+def get_engine() -> Engine:
+    global _ENGINE
+    if _ENGINE is None:
         url = require_database_url()
-        _engine = create_engine(
+        _ENGINE = create_engine(
             url,
-            poolclass=QueuePool,
-            pool_size=5,
-            max_overflow=5,
             pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=10,
             future=True,
         )
-        _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, future=True)
-    return _engine
-
-
-def get_session() -> Session:
-    if _SessionLocal is None:
-        get_engine()
-    return _SessionLocal()
+    return _ENGINE

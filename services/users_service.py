@@ -1,58 +1,42 @@
+
 from __future__ import annotations
+import uuid
+import pandas as pd
+from sqlalchemy import select, insert, update
+from db.connection import get_engine
+from db.schema import users
+from config.settings import DEFAULT_FACILITY_ID
+from utils.time_utils import now_jst_dt
 
-from db.connection import get_session
-from db.schema import User
-from utils.text_utils import stable_user_code
+def list_users(active_only=True) -> pd.DataFrame:
+    with get_engine().begin() as conn:
+        stmt = select(users).where(users.c.facility_id == DEFAULT_FACILITY_ID).order_by(users.c.user_name)
+        if active_only:
+            stmt = stmt.where(users.c.display_flag == True)
+        rows = conn.execute(stmt).mappings().all()
+    return pd.DataFrame([dict(r) for r in rows])
 
+def user_options() -> list[dict]:
+    df = list_users(active_only=True)
+    if df.empty:
+        return []
+    return df.to_dict("records")
 
-def list_users(include_hidden: bool = False):
-    session = get_session()
-    try:
-        q = session.query(User)
-        if not include_hidden:
-            q = q.filter(User.is_visible == True)  # noqa: E712
-        return q.order_by(User.id.asc()).all()
-    finally:
-        session.close()
+def add_user(user_name: str, memo: str = ""):
+    with get_engine().begin() as conn:
+        conn.execute(insert(users).values(
+            id=str(uuid.uuid4()),
+            facility_id=DEFAULT_FACILITY_ID,
+            user_name=user_name,
+            display_flag=True,
+            memo=memo,
+        ))
 
-
-def list_user_options():
-    return [(u.id, u.display_name) for u in list_users()]
-
-
-def create_user(display_name: str, basic_info: str = "", living_status: str = "", notes: str = "") -> User:
-    session = get_session()
-    try:
-        user = User(
-            user_code=stable_user_code(display_name),
-            display_name=display_name.strip(),
-            basic_info=basic_info,
-            living_status=living_status,
-            notes=notes,
-        )
-        session.add(user)
-        session.commit()
-        session.refresh(user)
-        return user
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
-
-
-def update_user(user_id: int, **kwargs) -> None:
-    session = get_session()
-    try:
-        user = session.query(User).get(user_id)
-        if not user:
-            raise ValueError("利用者が見つかりません。")
-        for key, value in kwargs.items():
-            if hasattr(user, key):
-                setattr(user, key, value)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+def update_user(user_id: str, user_name: str, display_flag: bool, memo: str = ""):
+    with get_engine().begin() as conn:
+        conn.execute(update(users).where(users.c.id == user_id).values(
+            user_name=user_name,
+            display_flag=display_flag,
+            memo=memo,
+            updated_at=now_jst_dt(),
+        ))

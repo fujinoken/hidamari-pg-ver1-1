@@ -1,64 +1,46 @@
-from __future__ import annotations
 
-import hashlib
-import secrets
-from db.connection import get_session
-from db.schema import StaffAccount
+from __future__ import annotations
+import bcrypt
+from sqlalchemy import select, update
+from db.connection import get_engine
+from db.schema import staff_accounts
+from config.settings import DEFAULT_FACILITY_ID
 from utils.time_utils import now_jst_dt
 
-
-def hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120000).hex()
-    return f"pbkdf2_sha256${salt}${digest}"
-
-
-def verify_password(password: str, stored_hash: str) -> bool:
-    try:
-        method, salt, digest = stored_hash.split("$", 2)
-        if method != "pbkdf2_sha256":
-            return False
-        check = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120000).hex()
-        return secrets.compare_digest(check, digest)
-    except Exception:
-        return False
-
-
-def authenticate(login_id: str, password: str):
-    session = get_session()
-    try:
-        account = session.query(StaffAccount).filter(StaffAccount.login_id == login_id.strip().lower()).first()
-        if not account or not account.is_active:
+def authenticate(login_id: str, password: str) -> dict | None:
+    login_id = (login_id or "").strip()
+    password = password or ""
+    if not login_id or not password:
+        return None
+    with get_engine().begin() as conn:
+        row = conn.execute(
+            select(staff_accounts).where(
+                staff_accounts.c.facility_id == DEFAULT_FACILITY_ID,
+                staff_accounts.c.login_id == login_id,
+                staff_accounts.c.active == True,
+            )
+        ).mappings().first()
+        if not row:
             return None
-        if not verify_password(password, account.password_hash):
+        ok = bcrypt.checkpw(password.encode("utf-8"), row["password_hash"].encode("utf-8"))
+        if not ok:
             return None
-        account.last_login_at = now_jst_dt()
-        session.commit()
-        return {
-            "id": account.id,
-            "login_id": account.login_id,
-            "display_name": account.display_name,
-            "role": account.role,
-            "must_change_password": account.must_change_password,
-        }
-    finally:
-        session.close()
+        return dict(row)
 
+def change_password(staff_id: str, new_password: str):
+    if not new_password or len(new_password) < 4:
+        raise ValueError("パスワードは4文字以上にしてください。")
+    hashed = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    with get_engine().begin() as conn:
+        conn.execute(
+            update(staff_accounts)
+            .where(staff_accounts.c.id == staff_id)
+            .values(password_hash=hashed, must_change_password=False, updated_at=now_jst_dt())
+        )
 
-def change_password(account_id: int, new_password: str) -> None:
-    if len(new_password) < 8 or not any(c.isdigit() for c in new_password) or not any(c.isalpha() for c in new_password):
-        raise ValueError("パスワードは8文字以上で、英字と数字を含めてください。")
-    session = get_session()
-    try:
-        account = session.query(StaffAccount).get(account_id)
-        if not account:
-            raise ValueError("アカウントが見つかりません。")
-        account.password_hash = hash_password(new_password)
-        account.must_change_password = False
-        account.updated_at = now_jst_dt()
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+def is_admin(user: dict) -> bool:
+    return (user or {}).get("role") == "admin"
+
+def require_admin(user: dict):
+    if not is_admin(user):
+        raise PermissionError("管理者のみ操作できます。")

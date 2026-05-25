@@ -1,44 +1,32 @@
+
 from __future__ import annotations
+import uuid, json
+from sqlalchemy import insert
+from db.connection import get_engine
+from db.schema import audit_logs
+from config.settings import DEFAULT_FACILITY_ID
 
-from db.connection import get_session
-from db.schema import AuditLog
-
-
-def add_audit_log(login_id: str, role: str, action: str, target_table: str = "", target_id: str = "", summary: str = "", before_text: str = "", after_text: str = "") -> None:
-    session = get_session()
+def add_audit_log(login_id: str = "", role: str = "", action: str = "", target_table: str = "", target_id: str = "", summary: str = "", before=None, after=None, facility_id: str = DEFAULT_FACILITY_ID):
     try:
-        session.add(AuditLog(
-            login_id=login_id or "",
-            role=role or "",
-            action=action,
-            target_table=target_table,
-            target_id=str(target_id or ""),
-            summary=summary or "",
-            before_text=before_text or "",
-            after_text=after_text or "",
-        ))
-        session.commit()
+        def dumps(v):
+            if v is None:
+                return ""
+            try:
+                return json.dumps(v, ensure_ascii=False, default=str)
+            except Exception:
+                return str(v)
+        with get_engine().begin() as conn:
+            conn.execute(insert(audit_logs).values(
+                id=str(uuid.uuid4()),
+                facility_id=facility_id,
+                login_id=login_id or "",
+                role=role or "",
+                action=action or "",
+                target_table=target_table or "",
+                target_id=target_id or "",
+                summary=summary or "",
+                before_json=dumps(before),
+                after_json=dumps(after),
+            ))
     except Exception:
-        session.rollback()
-    finally:
-        session.close()
-
-
-def list_audit_logs(limit: int = 300):
-    session = get_session()
-    try:
-        rows = session.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit).all()
-        return [
-            {
-                "日時": r.created_at,
-                "ログインID": r.login_id,
-                "権限": r.role,
-                "操作": r.action,
-                "対象": r.target_table,
-                "対象ID": r.target_id,
-                "概要": r.summary,
-            }
-            for r in rows
-        ]
-    finally:
-        session.close()
+        pass
