@@ -1,52 +1,59 @@
-from datetime import date
 import pandas as pd
-from sqlalchemy import select, insert, desc
-from db.migrations import get_engine, init_db
-from db.schema import health_records, excretion_records, handover_records, residents
+from sqlalchemy import text
+from db.migrations import get_engine
 
 
-def _engine_ready():
-    return init_db()
-
-
-def list_residents():
-    engine = _engine_ready()
-    with engine.begin() as conn:
-        rows = conn.execute(select(residents).where(residents.c.is_active == True)).mappings().all()
-    return [dict(r) for r in rows]
+def _rows(sql, params=None):
+    with get_engine().begin() as conn:
+        return [dict(r) for r in conn.execute(text(sql), params or {}).mappings().all()]
 
 
 def add_health_record(data: dict):
-    engine = _engine_ready()
-    with engine.begin() as conn:
-        conn.execute(insert(health_records).values(**data))
+    sql = """
+    INSERT INTO health_records
+    (facility_id, user_id, user_name, record_date, temperature, blood_pressure_high, blood_pressure_low,
+     pulse, spo2, weight, meal_rate, memo, created_by)
+    VALUES
+    (:facility_id, :user_id, :user_name, :record_date, :temperature, :blood_pressure_high, :blood_pressure_low,
+     :pulse, :spo2, :weight, :meal_rate, :memo, :created_by)
+    """
+    with get_engine().begin() as conn:
+        conn.execute(text(sql), data)
+
+
+def list_health_records(limit=50):
+    return _rows("SELECT * FROM health_records ORDER BY record_date DESC, id DESC LIMIT :limit", {"limit": limit})
 
 
 def add_excretion_record(data: dict):
-    engine = _engine_ready()
-    with engine.begin() as conn:
-        conn.execute(insert(excretion_records).values(**data))
+    sql = """
+    INSERT INTO excretion_records
+    (facility_id, user_id, user_name, record_date, urination, defecation, memo, created_by)
+    VALUES
+    (:facility_id, :user_id, :user_name, :record_date, :urination, :defecation, :memo, :created_by)
+    """
+    with get_engine().begin() as conn:
+        conn.execute(text(sql), data)
+
+
+def list_excretion_records(limit=50):
+    return _rows("SELECT * FROM excretion_records ORDER BY record_date DESC, id DESC LIMIT :limit", {"limit": limit})
 
 
 def add_handover_record(data: dict):
-    engine = _engine_ready()
-    with engine.begin() as conn:
-        conn.execute(insert(handover_records).values(**data))
+    sql = """
+    INSERT INTO handover_records
+    (facility_id, record_date, shift, content, created_by)
+    VALUES
+    (:facility_id, :record_date, :shift, :content, :created_by)
+    """
+    with get_engine().begin() as conn:
+        conn.execute(text(sql), data)
 
 
-def list_health_records(limit: int = 30):
-    engine = _engine_ready()
-    stmt = select(health_records).order_by(desc(health_records.c.record_date), desc(health_records.c.id)).limit(limit)
-    return pd.read_sql(stmt, engine)
+def list_handover_records(limit=50):
+    return _rows("SELECT * FROM handover_records ORDER BY record_date DESC, id DESC LIMIT :limit", {"limit": limit})
 
 
-def list_excretion_records(limit: int = 30):
-    engine = _engine_ready()
-    stmt = select(excretion_records).order_by(desc(excretion_records.c.record_date), desc(excretion_records.c.id)).limit(limit)
-    return pd.read_sql(stmt, engine)
-
-
-def list_handover_records(limit: int = 30):
-    engine = _engine_ready()
-    stmt = select(handover_records).order_by(desc(handover_records.c.record_date), desc(handover_records.c.id)).limit(limit)
-    return pd.read_sql(stmt, engine)
+def to_dataframe(records):
+    return pd.DataFrame(records) if records else pd.DataFrame()

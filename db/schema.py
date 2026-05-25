@@ -1,65 +1,59 @@
-from sqlalchemy import MetaData, Table, Column, String, Integer, Float, Date, DateTime, Text, Boolean
-from datetime import datetime
+from sqlalchemy import MetaData, Table, Column, String, Integer, Float, Text, DateTime
+from sqlalchemy.sql import func
 
 metadata = MetaData()
 
 users = Table(
     "users", metadata,
-    Column("id", String, primary_key=True),
-    Column("login_id", String, unique=True, nullable=False),
-    Column("password", String, nullable=False),
-    Column("name", String, nullable=False),
-    Column("role", String, nullable=False, default="staff"),
-    Column("is_active", Boolean, nullable=False, default=True),
-    Column("created_at", DateTime, default=datetime.now),
-)
-
-residents = Table(
-    "residents", metadata,
-    Column("id", String, primary_key=True),
-    Column("name", String, nullable=False),
-    Column("room", String, default=""),
-    Column("is_active", Boolean, nullable=False, default=True),
-    Column("created_at", DateTime, default=datetime.now),
+    Column("id", String(64), primary_key=True),
+    Column("facility_id", String(64), nullable=False, default="default"),
+    Column("login_id", String(64), nullable=False, unique=True),
+    Column("password", String(255), nullable=False),
+    Column("name", String(100), nullable=False),
+    Column("role", String(32), nullable=False, default="staff"),
+    Column("created_at", DateTime, server_default=func.now()),
 )
 
 health_records = Table(
     "health_records", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("record_date", Date, nullable=False),
-    Column("resident_id", String, nullable=False),
-    Column("resident_name", String, nullable=False),
+    Column("facility_id", String(64), nullable=False, default="default"),
+    Column("user_id", String(64), nullable=False),
+    Column("user_name", String(100), nullable=False),
+    Column("record_date", String(20), nullable=False),
     Column("temperature", Float),
-    Column("blood_pressure_high", Integer),
-    Column("blood_pressure_low", Integer),
-    Column("pulse", Integer),
+    Column("blood_pressure_high", Float),
+    Column("blood_pressure_low", Float),
+    Column("pulse", Float),
     Column("spo2", Float),
     Column("weight", Float),
     Column("meal_rate", Float),
-    Column("memo", Text, default=""),
-    Column("staff_name", String, default=""),
-    Column("created_at", DateTime, default=datetime.now),
+    Column("memo", Text),
+    Column("created_by", String(100)),
+    Column("created_at", DateTime, server_default=func.now()),
 )
 
 excretion_records = Table(
     "excretion_records", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("record_date", Date, nullable=False),
-    Column("resident_id", String, nullable=False),
-    Column("resident_name", String, nullable=False),
-    Column("urination", String, default=""),
-    Column("bowel_movement", String, default=""),
-    Column("memo", Text, default=""),
-    Column("staff_name", String, default=""),
-    Column("created_at", DateTime, default=datetime.now),
+    Column("facility_id", String(64), nullable=False, default="default"),
+    Column("user_id", String(64), nullable=False),
+    Column("user_name", String(100), nullable=False),
+    Column("record_date", String(20), nullable=False),
+    Column("urination", Integer, default=0),
+    Column("defecation", Integer, default=0),
+    Column("memo", Text),
+    Column("created_by", String(100)),
+    Column("created_at", DateTime, server_default=func.now()),
 )
 
 handover_records = Table(
     "handover_records", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("record_date", Date, nullable=False),
-    Column("shift", String, default="日勤"),
-    Column("content", Text, default=""),
-    Column("staff_name", String, default=""),
-    Column("created_at", DateTime, default=datetime.now),
+    Column("facility_id", String(64), nullable=False, default="default"),
+    Column("record_date", String(20), nullable=False),
+    Column("shift", String(20), nullable=False),
+    Column("content", Text, nullable=False),
+    Column("created_by", String(100)),
+    Column("created_at", DateTime, server_default=func.now()),
 )

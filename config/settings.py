@@ -1,5 +1,6 @@
 APP_NAME = "ひだまり健康チェック管理システム"
-APP_VERSION = "Ver1.3.6"
-DB_PATH = "hidamari.db"
+APP_VERSION = "Ver1.3.7"
 DEFAULT_ADMIN_ID = "admin"
 DEFAULT_ADMIN_PASSWORD = "admin"
+DEFAULT_ADMIN_NAME = "管理者"
+DEFAULT_FACILITY_ID = "default"

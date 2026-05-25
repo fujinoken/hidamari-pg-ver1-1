@@ -1,12 +1,11 @@
-from sqlalchemy import select
+from sqlalchemy import text
 from db.migrations import get_engine
-from db.schema import users
 
 
-def login(login_id: str, password: str):
-    engine = get_engine()
-    with engine.begin() as conn:
+def authenticate(login_id: str, password: str):
+    with get_engine().begin() as conn:
         row = conn.execute(
-            select(users).where(users.c.login_id == login_id, users.c.password == password, users.c.is_active == True)
+            text("SELECT id, facility_id, login_id, name, role FROM users WHERE login_id=:login_id AND password=:password LIMIT 1"),
+            {"login_id": login_id, "password": password},
         ).mappings().first()
     return dict(row) if row else None

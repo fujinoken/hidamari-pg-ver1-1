@@ -1,25 +1,54 @@
-from sqlalchemy import create_engine, select, insert
-from config.settings import DB_PATH, DEFAULT_ADMIN_ID, DEFAULT_ADMIN_PASSWORD
-from db.schema import metadata, users, residents
+import os
+import streamlit as st
+from sqlalchemy import create_engine, text
+from config.settings import DEFAULT_ADMIN_ID, DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_NAME, DEFAULT_FACILITY_ID
+from db.schema import metadata
+
+
+def get_database_url() -> str:
+    url = None
+    try:
+        url = st.secrets.get("DATABASE_URL")
+    except Exception:
+        url = None
+    url = url or os.environ.get("DATABASE_URL") or "sqlite:///hidamari.db"
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
+
+
+_ENGINE = None
 
 
 def get_engine():
-    return create_engine(f"sqlite:///{DB_PATH}", future=True)
+    global _ENGINE
+    if _ENGINE is None:
+        _ENGINE = create_engine(get_database_url(), pool_pre_ping=True, future=True)
+    return _ENGINE
 
 
 def init_db():
     engine = get_engine()
     metadata.create_all(engine)
     with engine.begin() as conn:
-        admin = conn.execute(select(users).where(users.c.login_id == DEFAULT_ADMIN_ID)).first()
-        if admin is None:
-            conn.execute(insert(users).values(
-                id="admin", login_id=DEFAULT_ADMIN_ID, password=DEFAULT_ADMIN_PASSWORD,
-                name="管理者", role="admin", is_active=True
-            ))
-        # 初期利用者。不要なら画面上では後で拡張できます。
-        for rid, name in [("sakura", "さくら"), ("taro", "たろう")]:
-            exists = conn.execute(select(residents).where(residents.c.id == rid)).first()
-            if exists is None:
-                conn.execute(insert(residents).values(id=rid, name=name, room="", is_active=True))
-    return engine
+        exists = conn.execute(
+            text("SELECT id FROM users WHERE login_id = :login_id LIMIT 1"),
+            {"login_id": DEFAULT_ADMIN_ID},
+        ).first()
+        if not exists:
+            conn.execute(
+                text("""
+                INSERT INTO users (id, facility_id, login_id, password, name, role)
+                VALUES (:id, :facility_id, :login_id, :password, :name, :role)
+                """),
+                {
+                    "id": "admin",
+                    "facility_id": DEFAULT_FACILITY_ID,
+                    "login_id": DEFAULT_ADMIN_ID,
+                    "password": DEFAULT_ADMIN_PASSWORD,
+                    "name": DEFAULT_ADMIN_NAME,
+                    "role": "admin",
+                },
+            )
