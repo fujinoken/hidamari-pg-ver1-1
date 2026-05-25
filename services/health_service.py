@@ -1,141 +1,198 @@
 from __future__ import annotations
-from datetime import datetime, date
+
+import uuid
+import datetime as dt
 import pandas as pd
-from sqlalchemy import select, insert, update, delete, and_, or_
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import text
 from db.migrations import get_engine
-from db.schema import users, health_records, excretion_records, handovers
+from config.settings import DEFAULT_FACILITY_ID
 
-def _to_date(value):
-    if value is None or value == "":
+def _date_value(d):
+    if isinstance(d, dt.datetime):
+        return d.date()
+    if isinstance(d, dt.date):
+        return d
+    return dt.date.fromisoformat(str(d))
+
+def _str_or_none(v):
+    if v is None:
         return None
-    if isinstance(value, date):
-        return value
-    return pd.to_datetime(value).date()
+    v = str(v).strip()
+    return v if v else None
 
-# 利用者
-def list_users(active_only: bool = True, keyword: str = "") -> pd.DataFrame:
-    stmt = select(users).order_by(users.c.user_code)
-    conds = []
-    if active_only:
-        conds.append(users.c.is_active == True)
-    if keyword:
-        kw = f"%{keyword}%"
-        conds.append(or_(users.c.user_name.like(kw), users.c.user_code.like(kw), users.c.room.like(kw)))
-    if conds:
-        stmt = stmt.where(and_(*conds))
-    with get_engine().begin() as conn:
-        rows = conn.execute(stmt).mappings().all()
-    return pd.DataFrame([dict(r) for r in rows])
+def create_user(user_name: str, user_code: str = "", facility_id: str = DEFAULT_FACILITY_ID):
+    user_name = user_name.strip()
+    if not user_name:
+        raise ValueError("利用者名を入力してください。")
+    engine = get_engine()
+    uid = str(uuid.uuid4())
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO users (id, facility_id, user_code, user_name, is_active)
+                VALUES (:id, :facility_id, :user_code, :user_name, true)
+            """),
+            {
+                "id": uid,
+                "facility_id": facility_id,
+                "user_code": user_code.strip(),
+                "user_name": user_name,
+            },
+        )
+    return uid
 
-def add_user(user_code: str, user_name: str, room: str = "", birth_date=None, gender: str = "", memo: str = ""):
-    with get_engine().begin() as conn:
-        conn.execute(insert(users).values(
-            user_code=str(user_code).strip(), user_name=str(user_name).strip(), room=str(room).strip() or None,
-            birth_date=_to_date(birth_date), gender=str(gender).strip() or None, memo=str(memo).strip() or None,
-            is_active=True, created_at=datetime.utcnow(), updated_at=datetime.utcnow()
-        ))
+def list_users(facility_id: str = DEFAULT_FACILITY_ID, active_only: bool = True):
+    engine = get_engine()
+    where_active = "AND COALESCE(is_active, true) = true" if active_only else ""
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(f"""
+                SELECT CAST(id AS TEXT) AS id,
+                       COALESCE(CAST(user_code AS TEXT), '') AS user_code,
+                       COALESCE(CAST(user_name AS TEXT), '') AS user_name,
+                       COALESCE(is_active, true) AS is_active
+                FROM users
+                WHERE COALESCE(CAST(facility_id AS TEXT), 'default') = :facility_id
+                {where_active}
+                ORDER BY user_name
+            """),
+            {"facility_id": facility_id},
+        ).mappings().all()
+    return [dict(r) for r in rows]
 
-def update_user(user_id: int, user_code: str, user_name: str, room: str = "", birth_date=None, gender: str = "", memo: str = "", is_active: bool = True):
-    with get_engine().begin() as conn:
-        conn.execute(update(users).where(users.c.id == int(user_id)).values(
-            user_code=str(user_code).strip(), user_name=str(user_name).strip(), room=str(room).strip() or None,
-            birth_date=_to_date(birth_date), gender=str(gender).strip() or None, memo=str(memo).strip() or None,
-            is_active=bool(is_active), updated_at=datetime.utcnow()
-        ))
+def get_user_options(facility_id: str = DEFAULT_FACILITY_ID):
+    users = list_users(facility_id)
+    return {f"{u['user_name']}（{u['user_code']}）" if u.get("user_code") else u["user_name"]: u["id"] for u in users}
 
-def delete_user(user_id: int):
-    # 履歴保護のため無効化
-    with get_engine().begin() as conn:
-        conn.execute(update(users).where(users.c.id == int(user_id)).values(is_active=False, updated_at=datetime.utcnow()))
+def save_health_record(
+    record_date,
+    user_id: str,
+    temperature=None,
+    bp_high=None,
+    bp_low=None,
+    pulse=None,
+    spo2=None,
+    weight=None,
+    meal_rate=None,
+    memo="",
+    facility_id: str = DEFAULT_FACILITY_ID,
+):
+    if not user_id:
+        raise ValueError("利用者を選択してください。")
+    engine = get_engine()
+    record_id = str(uuid.uuid4())
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO health_records
+                (id, facility_id, record_date, user_id, temperature, bp_high, bp_low,
+                 pulse, spo2, weight, meal_rate, memo)
+                VALUES
+                (:id, :facility_id, :record_date, :user_id, :temperature, :bp_high, :bp_low,
+                 :pulse, :spo2, :weight, :meal_rate, :memo)
+            """),
+            {
+                "id": record_id,
+                "facility_id": facility_id,
+                "record_date": _date_value(record_date),
+                "user_id": str(user_id),
+                "temperature": temperature,
+                "bp_high": bp_high,
+                "bp_low": bp_low,
+                "pulse": pulse,
+                "spo2": spo2,
+                "weight": weight,
+                "meal_rate": meal_rate,
+                "memo": memo,
+            },
+        )
+    return record_id
 
-# 健康チェック
-def list_health_records(start_date=None, end_date=None, user_id=None, keyword: str = "") -> pd.DataFrame:
-    stmt = (
-        select(
-            health_records.c.id, health_records.c.record_date, health_records.c.user_id,
-            users.c.user_code, users.c.user_name, users.c.room,
-            health_records.c.temperature, health_records.c.blood_pressure_high, health_records.c.blood_pressure_low,
-            health_records.c.pulse, health_records.c.spo2, health_records.c.weight,
-            health_records.c.meal_rate, health_records.c.water_amount,
-            health_records.c.family_memo, health_records.c.staff_memo, health_records.c.staff_name,
-            health_records.c.created_at, health_records.c.updated_at,
-        ).select_from(health_records.join(users, health_records.c.user_id == users.c.id))
-        .order_by(health_records.c.record_date.desc(), users.c.user_code)
-    )
-    conds = []
-    if start_date:
-        conds.append(health_records.c.record_date >= _to_date(start_date))
-    if end_date:
-        conds.append(health_records.c.record_date <= _to_date(end_date))
-    if user_id:
-        conds.append(health_records.c.user_id == int(user_id))
-    if keyword:
-        kw = f"%{keyword}%"
-        conds.append(or_(users.c.user_name.like(kw), users.c.user_code.like(kw), users.c.room.like(kw)))
-    if conds:
-        stmt = stmt.where(and_(*conds))
-    with get_engine().begin() as conn:
-        rows = conn.execute(stmt).mappings().all()
-    return pd.DataFrame([dict(r) for r in rows])
-
-def get_health_record(record_id: int):
-    with get_engine().begin() as conn:
-        row = conn.execute(select(health_records).where(health_records.c.id == int(record_id))).mappings().first()
-    return dict(row) if row else None
-
-def upsert_health_record(record_date, user_id: int, temperature=None, blood_pressure_high=None, blood_pressure_low=None, pulse=None, spo2=None, weight=None, meal_rate=None, water_amount=None, family_memo: str = "", staff_memo: str = "", staff_name: str = ""):
-    record_date = _to_date(record_date)
-    user_id = int(user_id)
-    values = dict(
-        record_date=record_date, user_id=user_id, temperature=temperature,
-        blood_pressure_high=blood_pressure_high, blood_pressure_low=blood_pressure_low,
-        pulse=pulse, spo2=spo2, weight=weight, meal_rate=meal_rate, water_amount=water_amount,
-        family_memo=family_memo or None, staff_memo=staff_memo or None, staff_name=staff_name or None,
-        updated_at=datetime.utcnow(),
-    )
-    with get_engine().begin() as conn:
-        existing = conn.execute(select(health_records.c.id).where(health_records.c.record_date == record_date, health_records.c.user_id == user_id)).first()
-        if existing:
-            conn.execute(update(health_records).where(health_records.c.id == existing[0]).values(**values))
-            return "updated"
-        values["created_at"] = datetime.utcnow()
-        conn.execute(insert(health_records).values(**values))
-        return "created"
-
-def update_health_record(record_id: int, **kwargs):
-    allowed = {"record_date", "user_id", "temperature", "blood_pressure_high", "blood_pressure_low", "pulse", "spo2", "weight", "meal_rate", "water_amount", "family_memo", "staff_memo", "staff_name"}
-    values = {k: v for k, v in kwargs.items() if k in allowed}
+def update_health_record(record_id: str, **kwargs):
+    allowed = ["record_date", "user_id", "temperature", "bp_high", "bp_low", "pulse", "spo2", "weight", "meal_rate", "memo"]
+    values = {k: kwargs[k] for k in allowed if k in kwargs}
     if "record_date" in values:
-        values["record_date"] = _to_date(values["record_date"])
-    values["updated_at"] = datetime.utcnow()
-    with get_engine().begin() as conn:
-        conn.execute(update(health_records).where(health_records.c.id == int(record_id)).values(**values))
+        values["record_date"] = _date_value(values["record_date"])
+    if "user_id" in values and values["user_id"] is not None:
+        values["user_id"] = str(values["user_id"])
+    if not values:
+        return
+    values["id"] = str(record_id)
+    set_clause = ", ".join([f"{k} = :{k}" for k in values.keys() if k != "id"])
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(text(f"UPDATE health_records SET {set_clause} WHERE CAST(id AS TEXT) = :id"), values)
 
-def delete_health_record(record_id: int):
-    with get_engine().begin() as conn:
-        conn.execute(delete(health_records).where(health_records.c.id == int(record_id)))
+def delete_health_record(record_id: str):
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM health_records WHERE CAST(id AS TEXT) = :id"),
+            {"id": str(record_id)},
+        )
 
-def today_input_status(target_date=None) -> pd.DataFrame:
-    target_date = _to_date(target_date) or date.today()
-    with get_engine().begin() as conn:
-        urows = conn.execute(select(users.c.id, users.c.user_code, users.c.user_name, users.c.room).where(users.c.is_active == True).order_by(users.c.user_code)).mappings().all()
-        rrows = conn.execute(select(health_records.c.user_id, health_records.c.id).where(health_records.c.record_date == target_date)).mappings().all()
-    done = {r["user_id"]: r["id"] for r in rrows}
-    data = []
-    for u in urows:
-        data.append({"利用者コード": u["user_code"], "利用者名": u["user_name"], "居室": u["room"] or "", "入力状況": "入力済み" if u["id"] in done else "未入力", "記録ID": done.get(u["id"], "")})
-    return pd.DataFrame(data)
+def list_health_records(
+    facility_id: str = DEFAULT_FACILITY_ID,
+    start_date=None,
+    end_date=None,
+    user_id: str | None = None,
+    limit: int = 300,
+):
+    engine = get_engine()
+    params = {"facility_id": facility_id, "limit": int(limit)}
+    where = ["COALESCE(CAST(h.facility_id AS TEXT), 'default') = :facility_id"]
 
-# ダッシュボード用
-def list_excretion_records(limit: int = 20) -> pd.DataFrame:
-    stmt = select(excretion_records).order_by(excretion_records.c.record_date.desc()).limit(limit)
-    with get_engine().begin() as conn:
-        rows = conn.execute(stmt).mappings().all()
+    if start_date:
+        where.append("h.record_date >= :start_date")
+        params["start_date"] = _date_value(start_date)
+    if end_date:
+        where.append("h.record_date <= :end_date")
+        params["end_date"] = _date_value(end_date)
+    if user_id:
+        where.append("CAST(h.user_id AS TEXT) = :user_id")
+        params["user_id"] = str(user_id)
+
+    sql = f"""
+        SELECT
+            CAST(h.id AS TEXT) AS id,
+            h.record_date,
+            CAST(h.user_id AS TEXT) AS user_id,
+            COALESCE(CAST(u.user_name AS TEXT), CAST(h.user_id AS TEXT)) AS user_name,
+            h.temperature, h.bp_high, h.bp_low, h.pulse, h.spo2,
+            h.weight, h.meal_rate, h.memo
+        FROM health_records h
+        LEFT JOIN users u
+          ON CAST(h.user_id AS TEXT) = CAST(u.id AS TEXT)
+        WHERE {" AND ".join(where)}
+        ORDER BY h.record_date DESC, user_name ASC
+        LIMIT :limit
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text(sql), params).mappings().all()
     return pd.DataFrame([dict(r) for r in rows])
 
-def list_handovers(limit: int = 20) -> pd.DataFrame:
-    stmt = select(handovers).order_by(handovers.c.record_date.desc(), handovers.c.id.desc()).limit(limit)
-    with get_engine().begin() as conn:
-        rows = conn.execute(stmt).mappings().all()
-    return pd.DataFrame([dict(r) for r in rows])
+def today_input_status(facility_id: str = DEFAULT_FACILITY_ID, target_date=None):
+    target_date = _date_value(target_date or dt.date.today())
+    engine = get_engine()
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT
+                    CAST(u.id AS TEXT) AS user_id,
+                    COALESCE(CAST(u.user_name AS TEXT), '') AS user_name,
+                    CASE WHEN COUNT(h.id) > 0 THEN 1 ELSE 0 END AS done
+                FROM users u
+                LEFT JOIN health_records h
+                  ON CAST(h.user_id AS TEXT) = CAST(u.id AS TEXT)
+                 AND h.record_date = :target_date
+                WHERE COALESCE(CAST(u.facility_id AS TEXT), 'default') = :facility_id
+                  AND COALESCE(u.is_active, true) = true
+                GROUP BY CAST(u.id AS TEXT), COALESCE(CAST(u.user_name AS TEXT), '')
+                ORDER BY user_name
+            """),
+            {"facility_id": facility_id, "target_date": target_date},
+        ).mappings().all()
+    df = pd.DataFrame([dict(r) for r in rows])
+    if not df.empty:
+        df["入力状況"] = df["done"].apply(lambda x: "入力済み" if int(x) == 1 else "未入力")
+    return df

@@ -1,127 +1,131 @@
-from __future__ import annotations
-import os
-import streamlit as st
-from sqlalchemy import create_engine, select, insert, text, inspect
-from db.schema import metadata, staff_accounts
-from config.settings import DEFAULT_ADMIN_LOGIN_ID, DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_NAME
+from sqlalchemy import create_engine, text
+from config.settings import get_database_url, DEFAULT_ADMIN_ID, DEFAULT_ADMIN_PASSWORD, DEFAULT_FACILITY_ID
+from db.schema import metadata
+import uuid
 
-@st.cache_resource
 def get_engine():
-    db_url = None
+    return create_engine(get_database_url(), pool_pre_ping=True, future=True)
+
+def _safe_execute(conn, sql: str):
     try:
-        db_url = st.secrets.get("DATABASE_URL")
+        conn.execute(text(sql))
     except Exception:
-        db_url = None
-    if not db_url:
-        db_url = os.environ.get("DATABASE_URL")
-    if not db_url:
-        db_url = "sqlite:///hidamari.db"
-    return create_engine(db_url, future=True, pool_pre_ping=True)
+        # 既存DB差異がある場合でもアプリを止めない
+        pass
 
-def _dialect_name(engine) -> str:
-    try:
-        return engine.dialect.name
-    except Exception:
-        return ""
+def _is_postgres(engine) -> bool:
+    return engine.dialect.name.startswith("postgresql")
 
-def _column_exists(conn, table_name: str, column_name: str) -> bool:
-    inspector = inspect(conn)
-    try:
-        return column_name in [c["name"] for c in inspector.get_columns(table_name)]
-    except Exception:
-        return False
-
-def _add_column_if_missing(conn, table_name: str, column_name: str, ddl_type: str):
-    if _column_exists(conn, table_name, column_name):
-        return
-    dialect = _dialect_name(conn.engine)
-    if dialect == "postgresql":
-        conn.execute(text(f'ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {column_name} {ddl_type}'))
-    else:
-        conn.execute(text(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl_type}'))
-
-def ensure_schema_compatibility(engine):
-    """既存DBを壊さず、Ver1.3.10で必要な列を追加する。
-    metadata.create_all は既存テーブルの列追加をしないため、ここで補完する。
-    """
-    with engine.begin() as conn:
-        dialect = _dialect_name(engine)
-
-        # staff_accounts
-        for name, typ in [
-            ("login_id", "VARCHAR(100)"), ("password", "VARCHAR(255)"),
-            ("staff_name", "VARCHAR(100)"), ("role", "VARCHAR(50)"),
-            ("is_active", "BOOLEAN"), ("created_at", "TIMESTAMP"),
-        ]:
-            _add_column_if_missing(conn, "staff_accounts", name, typ)
-
-        # users
-        for name, typ in [
-            ("user_code", "VARCHAR(50)"), ("user_name", "VARCHAR(100)"),
-            ("room", "VARCHAR(50)"), ("birth_date", "DATE"),
-            ("gender", "VARCHAR(20)"), ("is_active", "BOOLEAN"),
-            ("memo", "TEXT"), ("created_at", "TIMESTAMP"), ("updated_at", "TIMESTAMP"),
-        ]:
-            _add_column_if_missing(conn, "users", name, typ)
-
-        # health_records
-        for name, typ in [
-            ("record_date", "DATE"), ("user_id", "INTEGER"),
-            ("temperature", "FLOAT"), ("blood_pressure_high", "INTEGER"),
-            ("blood_pressure_low", "INTEGER"), ("pulse", "INTEGER"),
-            ("spo2", "INTEGER"), ("weight", "FLOAT"),
-            ("meal_rate", "INTEGER"), ("water_amount", "INTEGER"),
-            ("family_memo", "TEXT"), ("staff_memo", "TEXT"),
-            ("staff_name", "VARCHAR(100)"), ("created_at", "TIMESTAMP"), ("updated_at", "TIMESTAMP"),
-        ]:
-            _add_column_if_missing(conn, "health_records", name, typ)
-
-        # excretion_records
-        for name, typ in [
-            ("record_date", "DATE"), ("user_id", "INTEGER"),
-            ("stool_count", "INTEGER"), ("urine_count", "INTEGER"),
-            ("memo", "TEXT"), ("staff_name", "VARCHAR(100)"), ("created_at", "TIMESTAMP"),
-        ]:
-            _add_column_if_missing(conn, "excretion_records", name, typ)
-
-        # handovers
-        for name, typ in [
-            ("record_date", "DATE"), ("shift", "VARCHAR(20)"),
-            ("title", "VARCHAR(200)"), ("body", "TEXT"),
-            ("staff_name", "VARCHAR(100)"), ("created_at", "TIMESTAMP"),
-        ]:
-            _add_column_if_missing(conn, "handovers", name, typ)
-
-        # 既存データのNULL補完（PostgreSQL / SQLite 両対応）
-        if dialect == "postgresql":
-            conn.execute(text("UPDATE users SET user_code = COALESCE(user_code, CAST(id AS TEXT)) WHERE user_code IS NULL OR user_code = ''"))
-            conn.execute(text("UPDATE users SET user_name = COALESCE(user_name, name, login_id, '利用者' || CAST(id AS TEXT)) WHERE user_name IS NULL OR user_name = ''"))
-            conn.execute(text("UPDATE users SET is_active = TRUE WHERE is_active IS NULL"))
-            conn.execute(text("UPDATE users SET created_at = NOW() WHERE created_at IS NULL"))
-            conn.execute(text("UPDATE users SET updated_at = NOW() WHERE updated_at IS NULL"))
-            conn.execute(text("UPDATE staff_accounts SET is_active = TRUE WHERE is_active IS NULL"))
-            conn.execute(text("UPDATE staff_accounts SET created_at = NOW() WHERE created_at IS NULL"))
-        else:
-            conn.execute(text("UPDATE users SET user_code = COALESCE(user_code, CAST(id AS TEXT)) WHERE user_code IS NULL OR user_code = ''"))
-            # SQLiteには存在しない列参照で落ちる場合があるため、最小補完
-            conn.execute(text("UPDATE users SET user_name = COALESCE(user_name, '利用者' || CAST(id AS TEXT)) WHERE user_name IS NULL OR user_name = ''"))
-            conn.execute(text("UPDATE users SET is_active = 1 WHERE is_active IS NULL"))
-            conn.execute(text("UPDATE users SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"))
-            conn.execute(text("UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL"))
-            conn.execute(text("UPDATE staff_accounts SET is_active = 1 WHERE is_active IS NULL"))
-            conn.execute(text("UPDATE staff_accounts SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"))
+def _is_sqlite(engine) -> bool:
+    return engine.dialect.name.startswith("sqlite")
 
 def init_db():
+    """
+    DB定義を全体統一。
+    Neon/PostgreSQLに古いDB構造が残っている場合も、
+    不足列追加・TEXT型への寄せ直しを行う。
+    """
     engine = get_engine()
+
+    # 新規テーブル作成
     metadata.create_all(engine)
-    ensure_schema_compatibility(engine)
+
     with engine.begin() as conn:
-        exists = conn.execute(select(staff_accounts.c.id).where(staff_accounts.c.login_id == DEFAULT_ADMIN_LOGIN_ID)).first()
+        if _is_postgres(engine):
+            # 旧DBの型不一致対策：id/user_id/login_id/facility_id は TEXT に寄せる
+            # 失敗しても、後段のSELECTではCASTして読むので止めない
+            alter_sqls = [
+                "ALTER TABLE users ALTER COLUMN id TYPE TEXT USING id::text",
+                "ALTER TABLE users ALTER COLUMN facility_id TYPE TEXT USING facility_id::text",
+                "ALTER TABLE users ALTER COLUMN user_code TYPE TEXT USING user_code::text",
+                "ALTER TABLE users ALTER COLUMN user_name TYPE TEXT USING user_name::text",
+                "ALTER TABLE health_records ALTER COLUMN id TYPE TEXT USING id::text",
+                "ALTER TABLE health_records ALTER COLUMN facility_id TYPE TEXT USING facility_id::text",
+                "ALTER TABLE health_records ALTER COLUMN user_id TYPE TEXT USING user_id::text",
+                "ALTER TABLE staff_accounts ALTER COLUMN id TYPE TEXT USING id::text",
+                "ALTER TABLE staff_accounts ALTER COLUMN facility_id TYPE TEXT USING facility_id::text",
+                "ALTER TABLE staff_accounts ALTER COLUMN login_id TYPE TEXT USING login_id::text",
+            ]
+            for sql in alter_sqls:
+                _safe_execute(conn, sql)
+
+            # 不足列の追加
+            add_columns = [
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS facility_id TEXT DEFAULT 'default'",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS user_code TEXT DEFAULT ''",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS user_name TEXT DEFAULT ''",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+                "ALTER TABLE staff_accounts ADD COLUMN IF NOT EXISTS facility_id TEXT DEFAULT 'default'",
+                "ALTER TABLE staff_accounts ADD COLUMN IF NOT EXISTS login_id TEXT DEFAULT 'admin'",
+                "ALTER TABLE staff_accounts ADD COLUMN IF NOT EXISTS password TEXT DEFAULT 'admin'",
+                "ALTER TABLE staff_accounts ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'admin'",
+                "ALTER TABLE staff_accounts ADD COLUMN IF NOT EXISTS display_name TEXT DEFAULT '管理者'",
+                "ALTER TABLE staff_accounts ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+                "ALTER TABLE health_records ADD COLUMN IF NOT EXISTS facility_id TEXT DEFAULT 'default'",
+                "ALTER TABLE health_records ADD COLUMN IF NOT EXISTS record_date DATE",
+                "ALTER TABLE health_records ADD COLUMN IF NOT EXISTS user_id TEXT",
+                "ALTER TABLE health_records ADD COLUMN IF NOT EXISTS temperature DOUBLE PRECISION",
+                "ALTER TABLE health_records ADD COLUMN IF NOT EXISTS bp_high DOUBLE PRECISION",
+                "ALTER TABLE health_records ADD COLUMN IF NOT EXISTS bp_low DOUBLE PRECISION",
+                "ALTER TABLE health_records ADD COLUMN IF NOT EXISTS pulse DOUBLE PRECISION",
+                "ALTER TABLE health_records ADD COLUMN IF NOT EXISTS spo2 DOUBLE PRECISION",
+                "ALTER TABLE health_records ADD COLUMN IF NOT EXISTS weight DOUBLE PRECISION",
+                "ALTER TABLE health_records ADD COLUMN IF NOT EXISTS meal_rate DOUBLE PRECISION",
+                "ALTER TABLE health_records ADD COLUMN IF NOT EXISTS memo TEXT",
+            ]
+            for sql in add_columns:
+                _safe_execute(conn, sql)
+
+        elif _is_sqlite(engine):
+            # SQLiteはADD COLUMN IF NOT EXISTS不可。PRAGMA確認して不足列だけ追加。
+            def sqlite_cols(table):
+                rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+                return {r[1] for r in rows}
+            for table, cols in {
+                "users": [
+                    ("facility_id", "TEXT DEFAULT 'default'"),
+                    ("user_code", "TEXT DEFAULT ''"),
+                    ("user_name", "TEXT DEFAULT ''"),
+                    ("is_active", "BOOLEAN DEFAULT 1"),
+                ],
+                "health_records": [
+                    ("facility_id", "TEXT DEFAULT 'default'"),
+                    ("record_date", "DATE"),
+                    ("user_id", "TEXT"),
+                    ("temperature", "FLOAT"),
+                    ("bp_high", "FLOAT"),
+                    ("bp_low", "FLOAT"),
+                    ("pulse", "FLOAT"),
+                    ("spo2", "FLOAT"),
+                    ("weight", "FLOAT"),
+                    ("meal_rate", "FLOAT"),
+                    ("memo", "TEXT"),
+                ],
+            }.items():
+                existing = sqlite_cols(table)
+                for name, typ in cols:
+                    if name not in existing:
+                        _safe_execute(conn, f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
+
+        # 管理者アカウント作成
+        exists = conn.execute(
+            text("SELECT COUNT(*) FROM staff_accounts WHERE login_id = :login_id"),
+            {"login_id": DEFAULT_ADMIN_ID},
+        ).scalar()
         if not exists:
-            conn.execute(insert(staff_accounts).values(
-                login_id=DEFAULT_ADMIN_LOGIN_ID,
-                password=DEFAULT_ADMIN_PASSWORD,
-                staff_name=DEFAULT_ADMIN_NAME,
-                role="admin",
-                is_active=True,
-            ))
+            conn.execute(
+                text("""
+                    INSERT INTO staff_accounts
+                    (id, facility_id, login_id, password, role, display_name, is_active)
+                    VALUES
+                    (:id, :facility_id, :login_id, :password, 'admin', '管理者', true)
+                """),
+                {
+                    "id": str(uuid.uuid4()),
+                    "facility_id": DEFAULT_FACILITY_ID,
+                    "login_id": DEFAULT_ADMIN_ID,
+                    "password": DEFAULT_ADMIN_PASSWORD,
+                },
+            )
+
+    return engine
