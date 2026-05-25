@@ -250,6 +250,7 @@ def apply_existing_db_migrations(conn) -> None:
 
     ensure_column(conn, "users", "facility_id", "TEXT DEFAULT 'facility_default'")
     ensure_column(conn, "users", "login_id", "TEXT")
+    ensure_column(conn, "users", "user_name", "TEXT")
     ensure_column(conn, "users", "display_name", "TEXT")
     ensure_column(conn, "users", "role", "TEXT DEFAULT 'staff'")
     ensure_column(conn, "users", "password_hash", "TEXT")
@@ -428,15 +429,16 @@ def seed_default_users(conn) -> None:
         if users_id_type in ["integer", "bigint", "smallint"]:
             insert_sql = """
                 INSERT INTO users
-                    (facility_id, login_id, display_name, role, password_hash,
+                    (facility_id, login_id, user_name, display_name, role, password_hash,
                      must_change_password, is_active)
                 VALUES
-                    (:facility_id, :login_id, :display_name, :role, :password_hash,
+                    (:facility_id, :login_id, :user_name, :display_name, :role, :password_hash,
                      true, true)
             """
             params = {
                 "facility_id": str(DEFAULT_FACILITY_ID),
                 "login_id": user["login_id"],
+                "user_name": user["login_id"],
                 "display_name": user["display_name"],
                 "role": user["role"],
                 "password_hash": hash_password(user["password"]),
@@ -444,16 +446,17 @@ def seed_default_users(conn) -> None:
         else:
             insert_sql = """
                 INSERT INTO users
-                    (id, facility_id, login_id, display_name, role, password_hash,
+                    (id, facility_id, login_id, user_name, display_name, role, password_hash,
                      must_change_password, is_active)
                 VALUES
-                    (:id, :facility_id, :login_id, :display_name, :role, :password_hash,
+                    (:id, :facility_id, :login_id, :user_name, :display_name, :role, :password_hash,
                      true, true)
             """
             params = {
                 "id": user["id"],
                 "facility_id": str(DEFAULT_FACILITY_ID),
                 "login_id": user["login_id"],
+                "user_name": user["login_id"],
                 "display_name": user["display_name"],
                 "role": user["role"],
                 "password_hash": hash_password(user["password"]),
