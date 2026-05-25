@@ -1,8 +1,10 @@
 from sqlalchemy import create_engine
-import streamlit as st
+from config.settings import DATABASE_URL
+
+_engine = None
 
 def get_engine():
-    database_url = st.secrets.get("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL が未設定です")
-    return create_engine(database_url, future=True)
+    global _engine
+    if _engine is None:
+        _engine = create_engine(DATABASE_URL, future=True)
+    return _engine

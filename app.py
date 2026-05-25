@@ -1,58 +1,58 @@
 import streamlit as st
-from config.settings import APP_NAME
+from config.settings import APP_NAME, APP_VERSION
 from db.migrations import init_db
-from services.auth_service import authenticate
-from pages import dashboard, health_input, excretion_input
+from services.auth_service import login
+from views import dashboard, health_input, excretion_input, handover
 
 st.set_page_config(page_title=APP_NAME, page_icon="🌿", layout="wide")
-
-try:
-    init_db()
-except Exception as e:
-    st.error(f"DB初期化エラー: {e}")
-    st.stop()
+init_db()
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user" not in st.session_state:
     st.session_state.user = None
 
-st.sidebar.title("app")
+st.title(APP_NAME)
+st.caption(APP_VERSION)
 
 if not st.session_state.logged_in:
-    st.title(APP_NAME)
-    st.caption("DB定義統一版 Ver1.3.4")
-    login_id = st.text_input("ログインID", value="admin")
-    password = st.text_input("パスワード", type="password", value="admin")
-    if st.button("ログイン"):
-        user = authenticate(login_id, password)
+    st.subheader("ログイン")
+    with st.form("login_form"):
+        login_id = st.text_input("ログインID", value="admin")
+        password = st.text_input("パスワード", type="password", value="admin")
+        submitted = st.form_submit_button("ログイン")
+    if submitted:
+        user = login(login_id, password)
         if user:
             st.session_state.logged_in = True
             st.session_state.user = user
             st.rerun()
         else:
             st.error("ログインIDまたはパスワードが違います。")
-    st.info("初期ID：admin / 初期PW：admin")
+    st.info("初期ログイン：ID admin / PW admin")
     st.stop()
 
 user = st.session_state.user
-st.sidebar.caption(user.get("display_name", "user"))
+st.sidebar.success(f"ログイン中：{user['display_name']}")
+st.sidebar.markdown("---")
+st.sidebar.subheader("管理者メニュー")
+
 menu = st.sidebar.radio(
-    "menu",
-    ["dashboard", "health input", "excretion input", "handover"],
+    "表示する画面を選んでください",
+    ["管理者ダッシュボード", "健康チェック入力", "排泄チェック入力", "申し送り"],
+    label_visibility="collapsed",
 )
 
+st.sidebar.markdown("---")
 if st.sidebar.button("ログアウト"):
-    st.session_state.logged_in = False
-    st.session_state.user = None
+    st.session_state.clear()
     st.rerun()
 
-if menu == "dashboard":
-    dashboard.render(user)
-elif menu == "health input":
-    health_input.render(user)
-elif menu == "excretion input":
-    excretion_input.render(user)
-else:
-    st.title("handover")
-    st.info("申し送り機能は次段階で追加できます。まずはDB定義統一版の安定起動を優先しています。")
+if menu == "管理者ダッシュボード":
+    dashboard.render()
+elif menu == "健康チェック入力":
+    health_input.render()
+elif menu == "排泄チェック入力":
+    excretion_input.render()
+elif menu == "申し送り":
+    handover.render()
