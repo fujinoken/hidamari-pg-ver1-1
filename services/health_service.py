@@ -1,80 +1,117 @@
-from __future__ import annotations
-import uuid
-import pandas as pd
 from sqlalchemy import text
-from db.connection import engine
+from db.database import get_engine, fetch_columns, is_postgres
 from config.settings import DEFAULT_FACILITY_ID
+import uuid
 
+def _fid(facility_id=None):
+    return facility_id or DEFAULT_FACILITY_ID
 
-def _fetch_df(sql: str, params: dict | None = None) -> pd.DataFrame:
+def _active_sql(alias=""):
+    col = f"{alias}.is_active" if alias else "is_active"
+    return f"COALESCE(CAST({col} AS TEXT), 'true') IN ('true','TRUE','t','1')"
+
+def _num(value):
+    if value in ("", None):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+def create_user(user_name, user_code="", facility_id=None):
+    engine = get_engine()
     with engine.begin() as conn:
-        rows = conn.execute(text(sql), params or {}).mappings().all()
-    return pd.DataFrame(rows)
+        cols = fetch_columns(conn, "users")
+        id_type = (cols.get("id") or "").lower()
+        active_value = True if is_postgres(conn.get_bind()) else 1
 
+        # 同名＋同施設の重複登録を軽く防止
+        existing = conn.execute(text("""
+            SELECT CAST(id AS TEXT) FROM users
+            WHERE COALESCE(facility_id, 'default')=:facility_id
+              AND user_name=:user_name
+            LIMIT 1
+        """), {"facility_id": _fid(facility_id), "user_name": user_name}).scalar()
+        if existing:
+            return str(existing)
 
-def list_users(active_only: bool = True) -> pd.DataFrame:
-    sql = "SELECT id, user_name, user_code, kana, is_active FROM users WHERE facility_id=:fid"
-    if active_only:
-        sql += " AND is_active = TRUE"
-    sql += " ORDER BY user_name"
-    return _fetch_df(sql, {"fid": DEFAULT_FACILITY_ID})
+        if "int" in id_type:
+            user_id = conn.execute(text("SELECT COALESCE(MAX(id) + 1, 1) FROM users")).scalar()
+        else:
+            user_id = str(uuid.uuid4())
 
-
-def create_user(user_name: str, user_code: str = "", kana: str = ""):
-    user_name = (user_name or "").strip()
-    if not user_name:
-        raise ValueError("利用者名を入力してください。")
-    user_id = str(uuid.uuid4())
-    with engine.begin() as conn:
         conn.execute(text("""
-            INSERT INTO users (id, facility_id, user_code, user_name, kana, is_active)
-            VALUES (:id, :fid, :code, :name, :kana, TRUE)
-        """), {"id": user_id, "fid": DEFAULT_FACILITY_ID, "code": user_code, "name": user_name, "kana": kana})
-    return user_id
+            INSERT INTO users (id, facility_id, user_code, user_name, is_active)
+            VALUES (:id, :facility_id, :user_code, :user_name, :is_active)
+        """), {
+            "id": user_id,
+            "facility_id": _fid(facility_id),
+            "user_code": user_code,
+            "user_name": user_name,
+            "is_active": active_value,
+        })
+        return str(user_id)
 
+def list_users(facility_id=None, active_only=True):
+    sql = """
+        SELECT CAST(id AS TEXT) AS id,
+               COALESCE(user_code, '') AS user_code,
+               COALESCE(user_name, '') AS user_name,
+               is_active
+        FROM users
+        WHERE COALESCE(facility_id, 'default') = :facility_id
+    """
+    if active_only:
+        sql += f" AND {_active_sql()}"
+    sql += " ORDER BY user_name"
 
-def save_health_record(data: dict):
-    rec_id = data.get("id") or str(uuid.uuid4())
-    params = {
-        "id": rec_id,
-        "fid": DEFAULT_FACILITY_ID,
-        "user_id": data["user_id"],
-        "record_date": data["record_date"],
-        "temperature": data.get("temperature"),
-        "bp_high": data.get("bp_high"),
-        "bp_low": data.get("bp_low"),
-        "pulse": data.get("pulse"),
-        "spo2": data.get("spo2"),
-        "weight": data.get("weight"),
-        "meal_rate": data.get("meal_rate"),
-        "memo": data.get("memo", ""),
+    with get_engine().connect() as conn:
+        return [dict(r) for r in conn.execute(text(sql), {"facility_id": _fid(facility_id)}).mappings().all()]
+
+def save_health_record(data, facility_id=None):
+    payload = {
+        "facility_id": _fid(facility_id),
+        "user_id": str(data.get("user_id")),
+        "record_date": str(data.get("record_date")),
+        "temperature": _num(data.get("temperature")),
+        "bp_high": _num(data.get("bp_high")),
+        "bp_low": _num(data.get("bp_low")),
+        "pulse": _num(data.get("pulse")),
+        "spo2": _num(data.get("spo2")),
+        "weight": _num(data.get("weight")),
+        "meal_rate": _num(data.get("meal_rate")),
+        "memo": data.get("memo") or "",
     }
-    with engine.begin() as conn:
+
+    with get_engine().begin() as conn:
         conn.execute(text("""
             INSERT INTO health_records
-            (id, facility_id, user_id, record_date, temperature, bp_high, bp_low, pulse, spo2, weight, meal_rate, memo)
-            VALUES (:id, :fid, :user_id, :record_date, :temperature, :bp_high, :bp_low, :pulse, :spo2, :weight, :meal_rate, :memo)
-            ON CONFLICT (facility_id, user_id, record_date) DO UPDATE SET
-                temperature=EXCLUDED.temperature,
-                bp_high=EXCLUDED.bp_high,
-                bp_low=EXCLUDED.bp_low,
-                pulse=EXCLUDED.pulse,
-                spo2=EXCLUDED.spo2,
-                weight=EXCLUDED.weight,
-                meal_rate=EXCLUDED.meal_rate,
-                memo=EXCLUDED.memo,
-                updated_at=CURRENT_TIMESTAMP
-        """), params)
-    return rec_id
+            (facility_id, user_id, record_date, temperature, bp_high, bp_low, pulse, spo2, weight, meal_rate, memo)
+            VALUES
+            (:facility_id, :user_id, :record_date, :temperature, :bp_high, :bp_low, :pulse, :spo2, :weight, :meal_rate, :memo)
+        """), payload)
 
+def update_health_record(record_id, data, facility_id=None):
+    payload = {
+        "id": record_id,
+        "facility_id": _fid(facility_id),
+        "user_id": str(data.get("user_id")),
+        "record_date": str(data.get("record_date")),
+        "temperature": _num(data.get("temperature")),
+        "bp_high": _num(data.get("bp_high")),
+        "bp_low": _num(data.get("bp_low")),
+        "pulse": _num(data.get("pulse")),
+        "spo2": _num(data.get("spo2")),
+        "weight": _num(data.get("weight")),
+        "meal_rate": _num(data.get("meal_rate")),
+        "memo": data.get("memo") or "",
+    }
 
-def update_health_record(record_id: str, data: dict):
-    params = {"id": record_id, **data}
-    with engine.begin() as conn:
+    with get_engine().begin() as conn:
         conn.execute(text("""
-            UPDATE health_records SET
+            UPDATE health_records
+            SET user_id=:user_id,
                 record_date=:record_date,
-                user_id=:user_id,
                 temperature=:temperature,
                 bp_high=:bp_high,
                 bp_low=:bp_low,
@@ -84,47 +121,67 @@ def update_health_record(record_id: str, data: dict):
                 meal_rate=:meal_rate,
                 memo=:memo,
                 updated_at=CURRENT_TIMESTAMP
-            WHERE id=:id
-        """), params)
+            WHERE id=:id AND COALESCE(facility_id, 'default')=:facility_id
+        """), payload)
 
+def delete_health_record(record_id, facility_id=None):
+    with get_engine().begin() as conn:
+        conn.execute(text("""
+            DELETE FROM health_records
+            WHERE id=:id AND COALESCE(facility_id, 'default')=:facility_id
+        """), {"id": record_id, "facility_id": _fid(facility_id)})
 
-def delete_health_record(record_id: str):
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM health_records WHERE id=:id"), {"id": record_id})
+def list_health_records(facility_id=None, user_id=None, start_date=None, end_date=None, keyword=None, limit=200):
+    params = {"facility_id": _fid(facility_id), "limit": int(limit)}
+    where = ["COALESCE(h.facility_id, 'default') = :facility_id"]
 
-
-def list_health_records(start_date: str | None = None, end_date: str | None = None, user_id: str | None = None) -> pd.DataFrame:
-    sql = """
-        SELECT h.id, h.record_date, h.user_id, u.user_name,
-               h.temperature, h.bp_high, h.bp_low, h.pulse, h.spo2, h.weight, h.meal_rate, h.memo
-        FROM health_records h
-        LEFT JOIN users u ON CAST(h.user_id AS TEXT)=CAST(u.id AS TEXT)
-        WHERE h.facility_id=:fid
-    """
-    params = {"fid": DEFAULT_FACILITY_ID}
-    if start_date:
-        sql += " AND h.record_date >= :start_date"
-        params["start_date"] = start_date
-    if end_date:
-        sql += " AND h.record_date <= :end_date"
-        params["end_date"] = end_date
     if user_id:
-        sql += " AND CAST(h.user_id AS TEXT)=CAST(:user_id AS TEXT)"
-        params["user_id"] = user_id
-    sql += " ORDER BY h.record_date DESC, u.user_name"
-    return _fetch_df(sql, params)
+        where.append("CAST(h.user_id AS TEXT) = :user_id")
+        params["user_id"] = str(user_id)
+    if start_date:
+        where.append("CAST(h.record_date AS TEXT) >= :start_date")
+        params["start_date"] = str(start_date)
+    if end_date:
+        where.append("CAST(h.record_date AS TEXT) <= :end_date")
+        params["end_date"] = str(end_date)
+    if keyword:
+        where.append("(LOWER(COALESCE(u.user_name, '')) LIKE LOWER(:keyword) OR LOWER(COALESCE(h.memo, '')) LIKE LOWER(:keyword))")
+        params["keyword"] = f"%{keyword}%"
 
+    sql = f"""
+        SELECT
+            h.id,
+            CAST(h.record_date AS TEXT) AS record_date,
+            CAST(h.user_id AS TEXT) AS user_id,
+            COALESCE(u.user_name, '') AS user_name,
+            h.temperature,
+            h.bp_high,
+            h.bp_low,
+            h.pulse,
+            h.spo2,
+            h.weight,
+            h.meal_rate,
+            h.memo
+        FROM health_records h
+        LEFT JOIN users u
+          ON CAST(h.user_id AS TEXT) = CAST(u.id AS TEXT)
+        WHERE {' AND '.join(where)}
+        ORDER BY CAST(h.record_date AS TEXT) DESC, h.id DESC
+        LIMIT :limit
+    """
+    with get_engine().connect() as conn:
+        return [dict(r) for r in conn.execute(text(sql), params).mappings().all()]
 
-def today_input_status(target_date: str) -> pd.DataFrame:
-    return _fetch_df("""
-        SELECT u.id AS user_id, u.user_name,
-               CASE WHEN h.id IS NULL THEN '未入力' ELSE '入力済み' END AS 入力状況,
-               h.record_date AS 記録日
-        FROM users u
-        LEFT JOIN health_records h
-          ON CAST(u.id AS TEXT)=CAST(h.user_id AS TEXT)
-         AND h.record_date = :target_date
-         AND h.facility_id = :fid
-        WHERE u.facility_id=:fid AND u.is_active = TRUE
-        ORDER BY u.user_name
-    """, {"fid": DEFAULT_FACILITY_ID, "target_date": target_date})
+def today_input_status(target_date, facility_id=None):
+    users = list_users(facility_id)
+    records = list_health_records(
+        facility_id=facility_id,
+        start_date=str(target_date),
+        end_date=str(target_date),
+        limit=1000
+    )
+    done_ids = {str(r["user_id"]) for r in records}
+    return [
+        {"利用者名": u["user_name"], "入力状況": "入力済み" if str(u["id"]) in done_ids else "未入力"}
+        for u in users
+    ]

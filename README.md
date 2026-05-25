@@ -1,22 +1,19 @@
-# ひだまり健康チェック管理システム Ver1.3.14
+# ひだまり健康チェック管理システム Ver1.3.17
 
-## 修正内容
-- PostgreSQLの boolean = integer エラーを修正
-- ログイン判定で `is_active = TRUE OR is_active = 1` を使わない
-- 健康チェックCRUDをタブ表示
-- 利用者登録、健康チェック保存、更新、削除、一覧検索、今日の入力状況
+## 予防精査・改修内容
+- DB確認メニューを追加
+- DB初期化エラーを画面で確認できるように修正
+- 画面表示中のエラーも表示して原因を追えるように修正
+- 数値入力の空値・文字列混入を安全に処理
+- users.id / staff_accounts.id が integer 型で残っているDBにも対応
+- is_active が boolean / integer のどちらでも読めるように統一
+- 血圧列名 bp_high / bp_low に統一し、旧列から互換コピー
+- 利用者の同名重複登録を軽く防止
 
 ## 初期ログイン
 - ID: admin
 - PW: admin
 
-## Neon側に古いDBがある場合
-SQL Editorで以下を実行してからRebootしてください。
-
-```sql
-DROP TABLE IF EXISTS health_records CASCADE;
-DROP TABLE IF EXISTS excretion_records CASCADE;
-DROP TABLE IF EXISTS handover_records CASCADE;
-DROP TABLE IF EXISTS staff_accounts CASCADE;
-DROP TABLE IF EXISTS users CASCADE;
-```
+## 注意
+GitHubにはこのZIPの中身だけをアップロードしてください。
+古い `pages`、`utils`、旧バージョンフォルダは不要です。
