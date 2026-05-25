@@ -1,7 +1,0 @@
-APP_NAME = "ひだまり健康チェック管理システム"
-APP_VERSION = "Ver1.3.5 メニュー整理版"
-DB_PATH = "hidamari.db"
-DATABASE_URL = "sqlite:///hidamari.db"
-DEFAULT_FACILITY_ID = "default"
-DEFAULT_ADMIN_LOGIN_ID = "admin"
-DEFAULT_ADMIN_PASSWORD = "admin"
